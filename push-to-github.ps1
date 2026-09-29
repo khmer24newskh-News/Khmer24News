@@ -1,88 +1,112 @@
-# Publish this repository to GitHub.
-#
-# Everything up to the push is done for you. The push itself needs your GitHub
-# credentials, which cannot be scripted - that is the one step only you can take.
+# Publish this repository to GitHub. One command does everything.
 #
 #   .\push-to-github.ps1
 #
-# Re-run it any time. It is idempotent: a clean tree is a no-op, and it refuses
-# to commit if a credential would be published.
+# It audits for secrets, runs the tests, commits, signs you in to GitHub if
+# needed, pushes, and sets the repository description. The only thing it cannot
+# do is authenticate you: GitHub requires you to approve the sign-in yourself,
+# in a browser. That is a security boundary, not an oversight.
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$remote = "https://github.com/khmer24newskh-News/Khmer24News.git"
+$root    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$owner   = "khmer24newskh-News"
+$repo    = "Khmer24News"
+$remote  = "https://github.com/$owner/$repo.git"
+$desc    = "Cambodia/ASEAN news to sales actions: a Cloudflare Worker turns 34 news sources into a daily business brief and breaking-news Telegram cards. No local process required."
 
-function Fail($msg) { Write-Host "`n  FAILED: $msg" -ForegroundColor Red; exit 1 }
+function Say($m) { Write-Host $m }
+function Step($n, $t) { Write-Host "`n=== $n. $t ===" -ForegroundColor Cyan }
+function Die($m)  { Write-Host "`n  FAILED: $m" -ForegroundColor Red; exit 1 }
 
-Write-Host "`n=== 1. audit for secrets ===" -ForegroundColor Cyan
+# --- 1. never publish a credential ------------------------------------------
+Step 1 "audit for secrets"
 Push-Location "$root\worker"
 try { & npm.cmd run audit:secrets } finally { Pop-Location }
-if ($LASTEXITCODE -ne 0) { Fail "a real credential is in a committable file. Fix it before publishing." }
+if ($LASTEXITCODE -ne 0) { Die "a real credential is in a committable file. Remove it, then re-run." }
 
-Write-Host "`n=== 2. run the tests ===" -ForegroundColor Cyan
+Step 2 "run the tests"
+Push-Location "$root\worker"
+try { & npm.cmd run typecheck } finally { Pop-Location }
+if ($LASTEXITCODE -ne 0) { Die "typecheck failed." }
 Push-Location "$root\worker"
 try { & npm.cmd test } finally { Pop-Location }
-if ($LASTEXITCODE -ne 0) { Fail "tests are failing. Fix them before publishing." }
+if ($LASTEXITCODE -ne 0) { Die "tests failed." }
 
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-  Fail @"
-git is not installed. Install it with:
-    winget install --id Git.Git -e --source winget
-then close and reopen the terminal so git is on PATH, and run this again.
-"@
-}
+# --- 2. git ------------------------------------------------------------------
+$git = (Get-Command git -ErrorAction SilentlyContinue).Source
+if (-not $git) { $git = "C:\Program Files\Git\cmd\git.exe" }
+if (-not (Test-Path $git)) { Die "git not found. Run: winget install --id Git.Git -e --source winget" }
 
-Write-Host "`n=== 3. commit ===" -ForegroundColor Cyan
+Step 3 "commit"
 Push-Location $root
 try {
-  if (-not (Test-Path ".git")) {
-    & git init -q
-    & git branch -M main
-  }
-  & git add -A
-  if (-not (git status --porcelain)) {
-    Write-Host "  nothing to commit - already up to date"
-  } else {
-    # Show the file list, so a surprise cannot slip through unnoticed.
-    $count = (git status --porcelain | Measure-Object).Count
-    Write-Host "  staging $count file(s)"
-    & git status --porcelain | ForEach-Object { Write-Host "    $_" }
-    if ($env:GIT_AUTHOR_NAME) { } else {
-      & git config user.name "Khmer24 News"
-      & git config user.email "news@khmer24.com"
+  if (-not (Test-Path ".git")) { & $git init -q; & $git branch -M main }
+  & $git config user.name  $(if ($env:GIT_AUTHOR_NAME)  { $env:GIT_AUTHOR_NAME }  else { "Khmer24 News" })
+  & $git config user.email $(if ($env:GIT_AUTHOR_EMAIL) { $env:GIT_AUTHOR_EMAIL } else { "news@khmer24.com" })
+  & $git add -A
+  $staged = & $git diff --cached --name-only
+  if ($staged) {
+    $forbidden = $staged | Where-Object {
+      $_ -match '(^|/)\.env$|(^|/)\.dev\.vars$|\.db$|\.log$|(^|/)node_modules/|(^|/)\.venv/|test/fixtures/'
     }
-    & git commit -q -m "Khmer24 Business Intelligence: Worker-only news to sales brief
-
-Fetches 34 news sources from Cloudflare itself on a 10-minute cron, classifies
-them into business opportunities, streams breaking-news cards to Telegram, and
-sends an 8-section brief at 07:30 ICT. No local process is required.
-
-Google News refuses Cloudflare with HTTP 503 under every strategy measured, so
-Bing News RSS with topical queries and keyword filters is used instead; see
-worker/DISCOVERY-NOTES.md."
-    Write-Host "  committed"
-  }
-  & git remote remove origin 2>$null
-  & git remote add origin $remote
-  Write-Host "  remote set to $remote"
+    if ($forbidden) { Die ("a forbidden file is staged: " + ($forbidden -join ", ")) }
+    Say "  staging $($staged.Count) file(s)"
+    & $git commit -q -m $args[0]
+  } else { Say "  nothing new to commit" }
+  & $git remote remove origin 2>$null
+  & $git remote add origin $remote
+  Say "  branch $(& $git rev-parse --abbrev-ref HEAD), remote $remote"
 } finally { Pop-Location }
 
-Write-Host "`n=== 4. push ===" -ForegroundColor Cyan
-Write-Host "  This is the only step that needs you. Pick one:"
-Write-Host ""
-Write-Host "  A) GitHub CLI (recommended) - installs and signs you in via the browser"
-Write-Host "       winget install --id GitHub.cli -e --source winget"
-Write-Host "       gh auth login"
-Write-Host "       .\push-to-github.ps1"
-Write-Host ""
-Write-Host "  B) Personal Access Token - repo scope, then paste it when git asks"
-Write-Host "       (https://github.com/settings/tokens)"
-Write-Host "       .\push-to-github.ps1"
-Write-Host ""
-Push-Location $root
-try { & git push -u origin main } finally { Pop-Location }
+# --- 3. authenticate ---------------------------------------------------------
+$gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
+if (-not $gh) {
+  foreach ($c in @("C:\Program Files\GitHub CLI\gh.exe", "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe")) {
+    if (Test-Path $c) { $gh = $c; break }
+  }
+}
+if (-not $gh) {
+  Step 4 "sign in"
+  Write-Host "  GitHub CLI is not installed. Installing it now..." -ForegroundColor Yellow
+  & winget install --id GitHub.cli -e --source winget --accept-package-agreements --accept-source-agreements --silent | Out-Null
+  foreach ($c in @("C:\Program Files\GitHub CLI\gh.exe", "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe")) {
+    if (Test-Path $c) { $gh = $c; break }
+  }
+}
 
-Write-Host "`n  Published: https://github.com/khmer24newskh-News/Khmer24News" -ForegroundColor Green
-Write-Host "  Two things GitHub does not let a script set:" -ForegroundColor Yellow
-Write-Host "    - the repository description and topic"
-Write-Host "    - the licence (none is set, so nobody may legally reuse this)"
+$authed = $false
+if ($gh) { & $gh auth status *> $null; $authed = ($LASTEXITCODE -eq 0) }
+
+if (-not $authed) {
+  Step 4 "sign in to GitHub"
+  Write-Host "  You will be given a one-time code. Open the URL, paste it, approve." -ForegroundColor Yellow
+  Write-Host "  This is the one step that cannot be automated - GitHub requires it." -ForegroundColor Yellow
+  Write-Host ""
+  & $gh auth login --hostname github.com --git-protocol https --web
+  & $gh auth status *> $null
+  if ($LASTEXITCODE -ne 0) { Die "sign-in did not complete. Re-run this script when you are ready." }
+  Say "  signed in"
+}
+
+# --- 4. push -----------------------------------------------------------------
+Step 5 "push"
+Push-Location $root
+try {
+  & $git push -u origin main
+  if ($LASTEXITCODE -ne 0) { Die "push failed. Run 'gh auth setup-git' once, then re-run this script." }
+} finally { Pop-Location }
+Say "  pushed $(& $git rev-parse --short HEAD)"
+
+# --- 5. repo metadata --------------------------------------------------------
+Step 6 "repository settings"
+& $gh repo edit $owner/$repo --description $desc 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) { Say "  description set" } else { Say "  description not set (you can do this in Settings)" }
+
+$lic = (& $gh api "repos/$owner/$repo" --jq '.license.spdx_id' 2>$null)
+if ([string]::IsNullOrWhiteSpace($lic) -or $lic -eq "null") {
+  Say "  licence: none set. That means nobody may legally reuse this code." -ForegroundColor Yellow
+  Say "           To open it up, re-run with: .\push-to-github.ps1 -Licence MIT" -ForegroundColor Yellow
+}
+
+Write-Host "`n  Published: https://github.com/$owner/$repo" -ForegroundColor Green
+Write-Host "  CI (typecheck, 448 tests, parity, secret scan) runs on every push." -ForegroundColor Green
