@@ -1,0 +1,11 @@
+# Local development secrets. Copy to `.dev.vars` and fill in.
+#
+#   copy .dev.vars.example .dev.vars
+#
+# `.dev.vars` is gitignored. NEVER commit it: `npm run dev` reads these values
+# into the Worker, and `.dev.vars` is the single easiest file in this repository
+# to leak by accident because it looks like configuration.
+#
+# This is for `wrangler dev` only. The deployed Worker takes its real values from
+# Cloudflare, encrypted, via `wrangler secret put` - they never touch the disk.
+ADMIN_TOKEN=put_any_random_string_here

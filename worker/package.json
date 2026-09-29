@@ -1,0 +1,30 @@
+{
+  "name": "khmer24news-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "audit:secrets": "node scripts/audit-secrets.mjs",
+    "verify": "npm run typecheck && npm run audit:secrets && npm test",
+    "test": "node --experimental-strip-types test/run.ts",
+    "test:parity": "node --experimental-strip-types test/parity.ts",
+    "test:capture": "node --experimental-strip-types test/capture.ts",
+    "test:telegram": "node --experimental-strip-types test/telegram-live.ts",
+    "test:alerts": "node --experimental-strip-types test/alerts.ts",
+    "test:intel": "node --experimental-strip-types test/intel.ts",
+    "test:analyst": "node --experimental-strip-types test/analyst.ts",
+    "test:prefs": "node --experimental-strip-types test/prefs.ts",
+    "test:menu": "node --experimental-strip-types test/telegrammenu.ts",
+    "send:report": "node --experimental-strip-types test/send-report-live.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "@types/node": "^26.6.3",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.99.0"
+  }
+}

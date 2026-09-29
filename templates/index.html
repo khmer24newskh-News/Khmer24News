@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Khmer24 Business Intelligence</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:"Segoe UI",Arial,sans-serif;background:#f5f7fb;margin:0;color:#172033}
+header{background:#111827;color:white;padding:22px 5%;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+h1{margin:0;font-size:24px}
+.wrap{max-width:1200px;margin:25px auto;padding:0 18px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.card{background:white;border-radius:14px;padding:18px;box-shadow:0 2px 10px #0000000d}
+.num{font-size:28px;font-weight:bold}
+.actions{display:flex;gap:10px;margin:20px 0;flex-wrap:wrap}
+button{background:#111827;color:white;border:0;border-radius:9px;padding:11px 15px;cursor:pointer;font-size:14px}
+button:hover{opacity:.9}
+.green{background:#0f766e}
+.amber{background:#b45309}
+.grey{background:#6b7280}
+.article{background:white;border-radius:12px;padding:17px;margin:12px 0}
+.tag{display:inline-block;background:#eef2ff;border-radius:20px;padding:5px 9px;font-size:12px;margin:0 6px 6px 0}
+.sig{background:#f1f5f9;color:#475569}
+.score{float:right;font-weight:bold;color:#0f766e}
+.muted{color:#6b7280;font-size:13px}
+a{color:#2563eb;text-decoration:none}
+a:hover{text-decoration:underline}
+article h3{margin:8px 0 4px}
+.flash{border-radius:10px;padding:12px 15px;margin:10px 0;font-size:14px}
+.flash-ok{background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46}
+.flash-info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}
+.flash-error{background:#fef2f2;border:1px solid #fca5a5;color:#991b1b}
+.warn{background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:10px;padding:12px 15px;margin:10px 0;font-size:14px}
+form.filter{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0}
+select,input[type=number]{padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;background:white}
+.bar{height:6px;background:#e5e7eb;border-radius:4px;overflow:hidden;margin-top:7px}
+.bar>span{display:block;height:100%;background:linear-gradient(90deg,#0f766e,#10b981)}
+footer{color:#6b7280;font-size:12px;text-align:center;padding:26px 10px}
+@media(max-width:800px){.grid{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Khmer24 Business Intelligence</h1>
+    <div class="muted" style="color:#cbd5e1">News → Signal → Money → Customer → Action</div>
+  </div>
+  <div class="muted" style="color:#cbd5e1;text-align:right">
+    Window: last {{ hours }}h<br>
+    {% if telegram_ready %}Telegram: configured{% else %}Telegram: <b style="color:#fcd34d">not configured</b>{% endif %}<br>
+    {% if stream_alerts %}
+      Alerts: <b>{{ pending_alerts }}</b> pending · every 10 min
+    {% else %}
+      Alerts: <b style="color:#fcd34d">off</b>
+    {% endif %}
+  </div>
+</header>
+
+<div class="wrap">
+  {% for category, message in get_flashed_messages(with_categories=true) %}
+    <div class="flash flash-{{ category }}">{{ message }}</div>
+  {% endfor %}
+
+  {% if not telegram_ready %}
+  <div class="warn">
+    Telegram is not configured, so <b>Send Daily Report</b> will fail. Edit <code>.env</code>
+    (set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code>), restart, then verify with
+    <code>.venv\Scripts\python.exe send_daily.py --check</code>.
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    <form method="post" action="{{ url_for('refresh') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button>↻ Fetch Official News</button>
+    </form>
+    {% if stream_alerts %}
+    <form method="post" action="{{ url_for('send_alerts') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="amber">🔔 Run Alert Tick{% if pending_alerts %} ({{ pending_alerts }} pending){% endif %}</button>
+    </form>
+    <form method="post" action="{{ url_for('reset_alerts') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="grey">Mute alerts</button>
+    </form>
+    {% endif %}
+    <form method="post" action="{{ url_for('send_telegram') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="green">✈ Send Daily Report to Telegram</button>
+    </form>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="num">{{ counts|sum(attribute='1') }}</div><div>Signals (last {{ hours }}h)</div>
+    </div>
+    <div class="card">
+      <div class="num">{{ totals.get('Investment', 0) }}</div><div>Investment</div>
+    </div>
+    <div class="card">
+      <div class="num">{{ totals.get('Jobs &amp; Hiring', totals.get('Jobs & Hiring', 0)) }}</div><div>Jobs</div>
+    </div>
+    <div class="card">
+      <div class="num">{{ totals.get('Property', 0) }}</div><div>Property</div>
+    </div>
+  </div>
+
+  {% if counts %}
+  <div class="card" style="margin-top:14px">
+    <b>Category mix</b>
+    {% set top = counts[0][1] if counts else 1 %}
+    {% for name, count in counts %}
+      {% if count / top > 0.34 %}
+      <div style="margin-top:8px;font-size:13px">
+        {{ name }} <span class="muted">({{ count }})</span>
+        <div class="bar"><span style="width:{{ (count / top * 100)|round|int }}%"></span></div>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form class="filter" method="get" action="{{ url_for('index') }}">
+    <label>Category
+      <select name="category">
+        <option value="all" {% if category=='all' %}selected{% endif %}>All</option>
+        {% for name, _ in counts %}<option value="{{ name }}" {% if category==name %}selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Window
+      <input type="number" name="hours" value="{{ hours }}" min="1" max="720" style="width:80px"> h
+    </label>
+    <button type="submit">Apply</button>
+    <a class="muted" href="{{ url_for('index') }}" style="margin-left:8px">reset</a>
+  </form>
+
+  <h2>Top Business Signals</h2>
+  {% for a in articles %}
+  <div class="article">
+    <span class="tag">{{ a.category }}</span>
+    <span class="tag">{{ a.source }}</span>
+    <span class="score">Score {{ a.score }}</span>
+    <article>
+      <h3>{{ a.title }}</h3>
+      <div class="muted">{{ a.published }} · {{ pretty_age(a.age_hours) }}</div>
+      {% if a.signals %}<div style="margin:7px 0">{% for s in a.signals.split(',') if s %}<span class="tag sig">{{ s.strip() }}</span>{% endfor %}</div>{% endif %}
+      <p><b>Opportunity:</b> {{ a.opportunity }}</p>
+      <p><b>Action:</b> {{ a.action }}</p>
+      <a href="{{ a.url|external }}" target="_blank" rel="noopener noreferrer">Open source →</a>
+    </article>
+  </div>
+  {% else %}
+  <div class="card">
+    No signals in the last {{ hours }} hours.
+    <br><br>Click <b>Fetch Official News</b>, or widen the window (for example <b>720</b> hours) to backfill.
+  </div>
+  {% endfor %}
+
+  <h2>Configured Sources</h2>
+  <div class="card">
+    {% for s in sources %}
+    <div style="padding:7px 0;border-bottom:1px solid #f1f5f9">
+      <b>{{ s.name }}</b>
+      <span class="muted">tier {{ s.tier }} · {{ s.domain }}</span> —
+      <a href="{{ s.home }}" target="_blank" rel="noopener noreferrer">{{ s.home }}</a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<footer>Database: <code>{{ db_path }}</code> · API: <a href="{{ url_for('api_articles') }}">/api/articles</a> · <a href="{{ url_for('health') }}">/health</a>
+{% if stream_alerts %}<br>Alert watermark: <code>{{ alert_watermark }}</code>{% endif %}</footer>
+</body>
+</html>

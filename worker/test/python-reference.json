@@ -1,0 +1,225 @@
+{
+  "CATEGORIES": {
+    "Cambodia Economy": [
+      "economy",
+      "gdp",
+      "inflation",
+      "growth",
+      "fiscal",
+      "budget",
+      "revenue",
+      "monetary",
+      "deficit",
+      "tariff",
+      "national account",
+      "balance of payments",
+      "gross domestic",
+      "expenditure",
+      "productivity",
+      "សេដ្ឋកិច្ច"
+    ],
+    "Investment": [
+      "investment",
+      "investor",
+      "factory",
+      "project",
+      "capital",
+      "cdc",
+      "fdi",
+      "foreign direct",
+      "special economic zone",
+      "concession",
+      "manufacturing",
+      "assembly plant",
+      "joint venture",
+      "power plant",
+      "solar plant",
+      "solar farm",
+      "wind farm",
+      "hydropower",
+      "renewable energy",
+      "electricity",
+      "utility",
+      "វិនិយោគ"
+    ],
+    "Jobs & Hiring": [
+      "job",
+      "jobs",
+      "employment",
+      "hiring",
+      "worker",
+      "workers",
+      "salary",
+      "skill",
+      "skills",
+      "labor",
+      "labour",
+      "wage",
+      "wages",
+      "recruitment",
+      "unemployment",
+      "vocational",
+      "apprentice",
+      "minimum wage",
+      "human resource",
+      "ការងារការងារ"
+    ],
+    "Property": [
+      "property",
+      "real estate",
+      "construction",
+      "condo",
+      "condominium",
+      "land",
+      "housing",
+      "apartment",
+      "title deed",
+      "land title",
+      "urban development",
+      "tower",
+      "residence",
+      "សំណង់",
+      "ដីសម្គាល់"
+    ],
+    "Auto": [
+      "automotive",
+      "vehicle",
+      "vehicles",
+      "electric vehicle",
+      "ev battery",
+      "dealer",
+      "motorcycle",
+      "car import",
+      "vehicle import",
+      "showroom",
+      "រថយន្ត"
+    ],
+    "Marketplace": [
+      "consumer",
+      "retail",
+      "e-commerce",
+      "ecommerce",
+      "trade",
+      "export",
+      "exportation",
+      "import",
+      "marketplace",
+      "supermarket",
+      "wholesale",
+      "distribution",
+      "sme",
+      "នាំចេញ",
+      "នាំចូល"
+    ],
+    "Banking": [
+      "bank",
+      "loan",
+      "credit",
+      "interest rate",
+      "finance",
+      "fintech",
+      "microfinance",
+      "deposit",
+      "lending",
+      "digital payment",
+      "payment",
+      "mobile money",
+      "liquidity",
+      "ធនាគារ",
+      "បញ្ចូល"
+    ],
+    "Technology & AI": [
+      "technology",
+      "digital",
+      "artificial intelligence",
+      "software",
+      "startup",
+      "data center",
+      "telecom",
+      "5g",
+      "mobile network",
+      "cybersecurity",
+      "broadband",
+      "fiber",
+      "innovation",
+      "ai",
+      "បច្ចេកវិទ្យា"
+    ],
+    "Government & Regulation": [
+      "law",
+      "regulation",
+      "policy",
+      "tax",
+      "government",
+      "ministry",
+      "royal decree",
+      "sub-decree",
+      "legal",
+      "customs",
+      "official gazette",
+      "licence",
+      "license",
+      "permit",
+      "state council",
+      "រដ្ឋបាល",
+      "ច្បាប់"
+    ],
+    "Tourism": [
+      "tourism",
+      "tourist",
+      "tourists",
+      "hotel",
+      "travel",
+      "visitor arrivals",
+      "hospitality",
+      "flight",
+      "airline",
+      "airport",
+      "resort",
+      "ecotourism",
+      "ទេសនា"
+    ]
+  },
+  "PLAYBOOK": {
+    "Investment": [
+      "Potential new B2B leads: investor, factory, supplier or HR teams entering Cambodia.",
+      "Create a lead and contact the company within 24 hours."
+    ],
+    "Jobs & Hiring": [
+      "Potential Job-category demand from employers and recruiters.",
+      "Identify hiring companies and pitch Khmer24 Job packages."
+    ],
+    "Property": [
+      "Potential demand from developers, agents and property sellers.",
+      "Target developers/agents with Property advertising packages."
+    ],
+    "Auto": [
+      "Potential demand from dealers and vehicle sellers.",
+      "Identify active dealers and offer Auto advertising/business packages."
+    ],
+    "Marketplace": [
+      "Potential seller/category demand based on consumer and trade signals.",
+      "Identify affected seller categories and launch targeted outreach."
+    ],
+    "Banking": [
+      "Potential change in purchasing power or financing demand.",
+      "Review Auto/Property customer demand and partnership opportunities."
+    ],
+    "Technology & AI": [
+      "Potential new customer segment, jobs and product opportunities.",
+      "Create a target list of companies and relevant Job/Business packages."
+    ],
+    "Cambodia Economy": [
+      "Macro signal that may affect customer demand and sales conversion.",
+      "Review targets, promotions and customer segments."
+    ],
+    "Government & Regulation": [
+      "Potential market or compliance change.",
+      "Identify affected customer groups and prepare a sales/product response."
+    ],
+    "Tourism": [
+      "Potential impact on hospitality, jobs, retail and local demand.",
+      "Target hospitality/tourism employers and businesses."
+    ]
+  }
+}

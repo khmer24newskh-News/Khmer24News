@@ -1,0 +1,17 @@
+# Normalise line endings in the repository, not in the working copy.
+#
+# Without this, git on Windows rewrites every file to CRLF and the repository ends
+# up with mixed endings, so a diff between two machines shows the whole file
+# changing. Text is stored as LF; Windows-only scripts keep CRLF because cmd.exe
+# needs it.
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.png  binary
+*.jpg  binary
+*.pdf  binary
+
+# A lockfile is a generated artifact that must be byte-identical everywhere.
+worker/package-lock.json -diff

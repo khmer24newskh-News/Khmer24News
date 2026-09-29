@@ -1,0 +1,49 @@
+# ===========================================================================
+#  THIS REPOSITORY IS PUBLIC. Never commit secrets.
+#  .env holds a live Telegram bot token - it is ignored below and must stay
+#  that way. If you ever commit it by accident, ROTATE THE TOKEN IMMEDIATELY
+#  (@BotFather /revoke): git history is public and deleting the file does not
+#  remove it from earlier commits.
+# ===========================================================================
+
+# --- secrets: never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.json
+service-account*.json
+
+# --- local database ---
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# --- python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+
+# --- node / workers ---
+node_modules/
+.wrangler/
+dist/
+.dev.vars
+.dev.vars.*
+*.log
+
+# --- tooling / OS ---
+.deps-ok
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

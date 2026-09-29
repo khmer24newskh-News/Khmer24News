@@ -1,0 +1,57 @@
+name = "khmer24news"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+# Workers AI: used for the business analysis pass. The deterministic rule engine
+# stays the backbone, so the report still works if AI is unavailable or the
+# daily neuron allowance is exhausted. See src/analyst.ts.
+[ai]
+binding = "AI"
+
+# D1 replaces the local SQLite file.
+# For local development (`npm run dev`) any UUID works - miniflare creates a
+# throwaway local database and ignores this value.
+# For a real deploy:  npx wrangler d1 create khmer24news
+# then replace the UUID below with the database_id it prints.
+[[d1_databases]]
+binding = "DB"
+database_name = "khmer24news"
+database_id = "42b55d69-565a-482a-bdb2-71c00e788a8e"
+
+[triggers]
+# Two crons, because there are two different jobs.
+#   "*/10 * * * *" - poll every source and stream alerts as they publish.
+#   "30 0 * * *"  - 00:30 UTC = 07:30 Cambodia (UTC+7): the daily brief.
+# The 10-minute cron is what replaces the old local Windows task, so nothing
+# needs to run on any machine for alerts to stay live.
+crons = ["*/10 * * * *", "30 0 * * *"]
+
+[vars]
+LOOKBACK_HOURS = "72"
+MAX_ITEMS_PER_SOURCE = "15"
+MAX_RESOLVES = "40"
+DUP_OVERLAP = "0.5"
+# 0 disables automatic pruning. Set e.g. "180" to delete articles older than 180 days.
+PURGE_AFTER_DAYS = "0"
+
+# --- streaming alerts ---
+# Send each article as its source publishes it.
+STREAM_ALERTS = "1"
+# Articles per alert message.
+ALERT_BATCH_SIZE = "3"
+# Cap per tick. Anything above this waits for the next tick, so one source
+# bulk-uploading cannot flood your chat.
+ALERT_MAX_PER_TICK = "20"
+# Still send the 07:30 daily digest. Set to "0" for alerts only.
+DAILY_DIGEST = "1"
+
+# Discovery mode.
+#   "poll" (default) = the Worker fetches every source itself, on the 10-minute
+#            cron. Nothing needs to run on any local machine.
+#   "push" = legacy. Articles arrive from the old local Python fetcher via
+#            POST /ingest. Kept working as a fallback, but nothing pushes to it.
+DISCOVERY_MODE = "poll"
+
+[observability]
+enabled = true
