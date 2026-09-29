@@ -31,7 +31,7 @@ import { renderIntel } from "./intelhtml.ts";
 import { fetchFxRates } from "./market.ts";
 import { fetchAllCloudSources, unwrapBingUrl } from "./cloudfeeds.ts";
 import { CLOUD_SOURCES, LISTING_SOURCES, SOURCE_BY_ID, type Section } from "./registry.ts";
-import { countPendingAlerts } from "./db.ts";
+import { countPendingAlerts, cronHealth, setCronHeartbeat } from "./db.ts";
 import { renderSettings } from "./settingshtml.ts";
 import { probeAlternatives, probeGoogle, tuneFeeds, tuneQueries, winner } from "./diag.ts";
 import {
@@ -129,8 +129,12 @@ export default {
 
       switch (true) {
         case path === "/health": {
+          const cron = await cronHealth(env.DB);
           return json({
-            ok: true,
+            // A stale cron means no news is arriving, so it is reported at the
+            // top rather than buried: `ok` is false when the system is not
+            // actually doing its job.
+            ok: !cron.stale,
             platform: "cloudflare-worker",
             articles: await countAll(env.DB),
             telegram_configured: telegramConfigured(env),
@@ -138,6 +142,17 @@ export default {
             stream_alerts: strFlag(env.STREAM_ALERTS, true),
             pending_alerts: await countPendingAlerts(env.DB),
             admin_token_set: Boolean(env.ADMIN_TOKEN),
+            cron_last_run: cron.lastRun,
+            cron_minutes_since_run: cron.ageMinutes,
+            cron_stale: cron.stale,
+            ...(cron.expression ? { cron_expression: cron.expression } : {}),
+            ...(cron.stale
+              ? {
+                  warning:
+                    "The 10-minute cron has not run recently, so no new articles are arriving. " +
+                    "Check the crons in wrangler.toml and redeploy.",
+                }
+              : {}),
           });
         }
 
@@ -782,6 +797,10 @@ ${messages
           const isDailyRun = /^\d+ 0 \* \* \*$/.test(cron.trim());
           const streamAlerts = strFlag(env.STREAM_ALERTS, true);
           const dailyDigest = strFlag(env.DAILY_DIGEST, true);
+
+          // Recorded first, before anything that can fail, so a crash later in
+          // the tick still reads as "it ran" rather than "it never ran".
+          await setCronHeartbeat(env.DB, cron || "(unnamed)");
 
           if (isDailyRun && !dailyDigest && !streamAlerts) {
             console.log("cron: both STREAM_ALERTS and DAILY_DIGEST are off - nothing to do");

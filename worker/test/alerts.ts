@@ -2,7 +2,7 @@
 import { sendNewArticleAlerts, resetAlertWatermark, pendingAlerts } from "../src/alerts.ts";
 import { buildAlertMessages, hasSignal } from "../src/report.ts";
 import { buildBreakingCard, categoryLabel, severity } from "../src/breaking.ts";
-import { countPendingAlerts } from "../src/db.ts";
+import { countPendingAlerts, cronHealth, setCronHeartbeat } from "../src/db.ts";
 import { GENERAL_CATEGORY, GENERAL_PLAYBOOK } from "../src/config.ts";
 import type { Article } from "../src/db.ts";
 import type { Env } from "../src/env.ts";
@@ -21,8 +21,15 @@ class FakeD1 {
 
     const run = async () => {
       if (/INSERT INTO meta/.test(sql)) {
-        // The key is a SQL literal in setWatermark; only the value is bound.
-        self.meta.set("alert_watermark_id", String(api.params[0]));
+        if (api.params.length >= 2) {
+          // Generic upsert: the heartbeat binds key and value as two parameters,
+          // whereas setWatermark inlines the key as a SQL literal and binds only
+          // the value. Storing both under the watermark key would make the
+          // heartbeat untestable.
+          self.meta.set(String(api.params[0]), String(api.params[1]));
+        } else {
+          self.meta.set("alert_watermark_id", String(api.params[0]));
+        }
         return { success: true, meta: { changes: 1 } };
       }
       return { success: true, meta: { changes: 0 } };
@@ -46,6 +53,17 @@ class FakeD1 {
           .sort((a, b) => Number(a.id) - Number(b.id))
           .slice(0, limit);
         return { results: rows };
+      }
+      if (/FROM meta/.test(sql)) {
+        // Honours the LIKE filter so a query for cron_last_% does not pick up
+        // the alert watermark, which is what a real meta table would do.
+        const like = sql.match(/LIKE\s+'([^']+)'/i)?.[1];
+        const pattern = like ? new RegExp(`^${like.replace(/%/g, ".*")}$`, "i") : null;
+        return {
+          results: [...self.meta.entries()]
+            .filter(([k]) => !pattern || pattern.test(k))
+            .map(([key, value]) => ({ key, value })),
+        };
       }
       return { results: [] };
     };
@@ -407,6 +425,37 @@ check("batching respects perMessage",
   buildAlertMessages(rows, 1, "compact").length === 2,
   String(buildAlertMessages(rows, 1, "compact").length));
 check("empty batch -> no messages", buildAlertMessages([], 3).length === 0);
+
+console.log("\n[1f] the cron heartbeat reports a dead cron instead of hiding it");
+{
+  // A stopped cron used to be completely invisible: /health said ok:true while
+  // no news arrived at all. These are the assertions that would have caught it.
+  const never = await cronHealth(db);
+  check("no heartbeat reads as stale", never.stale === true);
+  check("and reports no run time", never.lastRun === null, JSON.stringify(never));
+  check("and no age", never.ageMinutes === null);
+
+  await setCronHeartbeat(db, "*/10 * * * *", "test");
+  const fresh = await cronHealth(db);
+  check("a fresh heartbeat is not stale", fresh.stale === false, JSON.stringify(fresh));
+  check("records the expression", fresh.expression === "*/10 * * * *", fresh.expression ?? "");
+  check("age is small", (fresh.ageMinutes ?? 999) < 5, String(fresh.ageMinutes));
+
+  // Simulate a tick that stopped two hours ago. Two bound parameters, exactly
+  // as setCronHeartbeat writes them - a single-parameter write is the watermark
+  // form, and would store under a different key.
+  await db.prepare(
+    `INSERT INTO meta(key, value) VALUES(?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).bind("cron_last_run", new Date(Date.now() - 120 * 60_000).toISOString()).run();
+  const old = await cronHealth(db);
+  check("a 2-hour-old heartbeat is stale", old.stale === true, JSON.stringify(old));
+  check("and the age is reported", (old.ageMinutes ?? 0) >= 119, String(old.ageMinutes));
+
+  // Restore a live value for anything later in the suite.
+  await setCronHeartbeat(db, "*/10 * * * *");
+  check("recovers once it ticks again", (await cronHealth(db)).stale === false);
+}
 
 console.log(`\n${"=".repeat(56)}\n  passed: ${pass}   failed: ${fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

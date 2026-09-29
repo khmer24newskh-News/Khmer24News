@@ -218,6 +218,81 @@ export const isPlaybookCategory = (category: string): boolean =>
  * immune to clock changes and DST, so nothing is missed or repeated across
  * restarts.
  */
+/**
+ * Record that a cron tick actually happened.
+ *
+ * Without this a stopped cron is completely silent: no articles arrive, no
+ * alerts fire, and `/health` still reports `ok: true`. That is the worst failure
+ * mode for a system whose whole job is to arrive on time, and it is why a dead
+ * cron went unnoticed for hours. The heartbeat makes the Worker self-reporting.
+ */
+export async function setCronHeartbeat(
+  db: D1Database,
+  cron: string,
+  detail?: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const rows: [string, string][] = [
+    ["cron_last_run", now],
+    ["cron_last_expression", cron],
+    ["cron_last_detail", detail ?? ""],
+  ];
+  for (const [key, value] of rows) {
+    await db
+      .prepare(
+        `INSERT INTO meta(key, value) VALUES(?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(key, value)
+      .run();
+  }
+}
+
+export interface CronHealth {
+  lastRun: string | null;
+  expression: string | null;
+  detail: string;
+  /** Whole minutes since the last tick, or null if it has never run. */
+  ageMinutes: number | null;
+  /** True when the gap is longer than a 10-minute cron can explain. */
+  stale: boolean;
+}
+
+/**
+ * How late a tick can be before it counts as stale.
+ *
+ * Generous on purpose. A tick can be skipped if the Worker was busy or the
+ * platform was degraded, so this should mean "look at this", not "something is
+ * definitely broken".
+ */
+const CRON_STALE_MINUTES = 25;
+
+export async function cronHealth(db: D1Database): Promise<CronHealth> {
+  const { results } = await db
+    .prepare(`SELECT key, value FROM meta WHERE key LIKE 'cron_last_%'`)
+    .all<{ key: string; value: string }>();
+  const map = new Map((results ?? []).map((r) => [r.key, r.value]));
+  const lastRun = map.get("cron_last_run") ?? null;
+  const parsed = lastRun ? Date.parse(lastRun) : Number.NaN;
+  if (!lastRun || Number.isNaN(parsed)) {
+    return {
+      lastRun: null,
+      expression: map.get("cron_last_expression") ?? null,
+      detail: map.get("cron_last_detail") ?? "",
+      ageMinutes: null,
+      stale: true,
+    };
+  }
+  const ageMinutes = Math.floor((Date.now() - parsed) / 60_000);
+  return {
+    lastRun,
+    expression: map.get("cron_last_expression") ?? null,
+    detail: map.get("cron_last_detail") ?? "",
+    ageMinutes,
+    stale: ageMinutes > CRON_STALE_MINUTES,
+  };
+}
+
 export async function getWatermark(db: D1Database): Promise<number | null> {
   const row = await db
     .prepare(`SELECT value FROM meta WHERE key = 'alert_watermark_id'`)

@@ -223,6 +223,45 @@ read-only without it.
 
 ---
 
+## Is the cron actually running?
+
+`GET /health` answers this in one request, and `ok` is **false** when it is not:
+
+```json
+{
+  "ok": true,
+  "cron_last_run": "2026-09-29T08:50:20.324Z",
+  "cron_minutes_since_run": 0,
+  "cron_stale": false,
+  "cron_expression": "*/10 * * * *"
+}
+```
+
+The heartbeat is written by the scheduled handler before anything else, so a
+tick that crashes later still counts as "it ran". A gap over 25 minutes reports
+`cron_stale` with a `warning` string. That threshold is deliberately generous: a
+tick can be skipped if the Worker was busy, so the flag should mean "look at
+this", not "something is definitely broken".
+
+### Do not use `wrangler tail` to check this
+
+It does not show scheduled-event logs. A tail attached for two hours reported
+zero cron events while the cron was firing every ten minutes, and it looked
+exactly like a dead schedule. The heartbeat exists because of that: "is it
+running?" is now answerable without attaching to a live stream.
+
+Confirming the crons are registered, via the API:
+
+```
+GET /accounts/{id}/workers/scripts/khmer24news/schedules
+-> schedules: [ { cron: "*/10 * * * *" }, { cron: "30 0 * * *" } ]
+```
+
+Article timestamps are not evidence either way. A poll that finds nothing new
+inserts nothing, so a healthy system can show no writes for hours.
+
+---
+
 ## Breaking-news alert cards
 
 A story that clears the severity bar arrives as its own message, one article per
