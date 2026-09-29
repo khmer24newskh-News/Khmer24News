@@ -1,0 +1,94 @@
+name: verify
+
+# Runs on every push and every pull request.
+#
+# The secret audit is the reason this exists. The repository is public, and the
+# worst realistic outcome is a live admin token or bot token landing in a
+# commit: the history is permanent, so the only real remedy is rotation. Catching
+# it here, before the push lands, is the only moment at which it is cheap.
+#
+# `audit:secrets` needs the real values from .env to compare against, and those
+# must never be available to CI. It therefore cannot run here, which is stated
+# plainly rather than left to look like a passing check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install
+        run: npm ci
+        working-directory: worker
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: worker
+
+      - name: Tests
+        run: |
+          # The main suite downloads its RSS fixtures on first run, which needs
+          # network. That is fine here and is why it is not committed.
+          npm test
+          npm run test:alerts
+          npm run test:intel
+          npm run test:analyst
+          npm run test:prefs
+          npm run test:menu
+        working-directory: worker
+
+      - name: Parity with the legacy Python fetcher
+        run: |
+          # The Python app is optional now, but if it is edited its source list
+          # and playbook must still agree with the Worker.
+          if command -v python3 >/dev/null 2>&1; then
+            python3 --version
+          else
+            echo "python3 unavailable; skipping the parity check"
+          fi
+          npm run test:parity
+        working-directory: worker
+
+      - name: Confirm no secret file is tracked
+        run: |
+          # The audit itself needs the real values, so it cannot run in CI. This
+          # is the half that can: prove the files that hold secrets are absent
+          # from the tree, and fail loudly if one has been force-added.
+          for f in .env worker/.dev.vars daily.log khmer24_bi.db; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "::error::$f is tracked in git. It holds a live credential."
+              exit 1
+            fi
+          done
+          for d in node_modules worker/node_modules .venv worker/test/fixtures; do
+            if git ls-files "$d" | grep -q .; then
+              echo "::error::$d is tracked in git and should be ignored."
+              exit 1
+            fi
+          done
+          echo "no credential file is tracked"
+
+      - name: Scan tracked files for credential shapes
+        run: |
+          # Value comparison is impossible without the real secrets, but a shape
+          # scan still catches the common accident: pasting a live token into
+          # .env.example or a documentation example.
+          if git grep -nIE '[0-9]{8,10}:[A-Za-z0-9_-]{35}' -- . \
+            ':!worker/test/fixtures' ':!*.lock' ':!package-lock.json'; then
+            echo "::error::a value shaped like a Telegram bot token is committed. Revoke it with @BotFather /revoke."
+            exit 1
+          fi
+          echo "no token-shaped strings in tracked files"
