@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-09-01"
 workers_dev = true
 
+# Pinned deliberately. Without it wrangler deploys to whichever account the
+# local OAuth token happens to be signed into, and fails with an unhelpful
+# "Authentication error [code: 10000]" when that is not this one. The token may
+# legitimately cover several accounts; this Worker belongs to exactly one.
+account_id = "54ed47b486e1a030a544deaaf1e1f9c1"
+
 # Workers AI: used for the business analysis pass. The deterministic rule engine
 # stays the backbone, so the report still works if AI is unavailable or the
 # daily neuron allowance is exhausted. See src/analyst.ts.

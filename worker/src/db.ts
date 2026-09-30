@@ -219,12 +219,15 @@ export const isPlaybookCategory = (category: string): boolean =>
  * restarts.
  */
 /**
- * Record that a cron tick actually happened.
+ * Record that a cron tick actually happened, keyed by its expression.
  *
- * Without this a stopped cron is completely silent: no articles arrive, no
- * alerts fire, and `/health` still reports `ok: true`. That is the worst failure
- * mode for a system whose whole job is to arrive on time, and it is why a dead
- * cron went unnoticed for hours. The heartbeat makes the Worker self-reporting.
+ * A single "last run" value is structurally useless when two crons are
+ * registered: the 10-minute poll overwrites the record every 10 minutes, so the
+ * daily brief's last run becomes unrecoverable within minutes. That is exactly
+ * how a missed 07:30 brief went unnoticed - the one number that mattered was
+ * the one that could never be read.
+ *
+ * Keys are `cron:last:<expression>`, so each schedule is tracked separately.
  */
 export async function setCronHeartbeat(
   db: D1Database,
@@ -233,9 +236,36 @@ export async function setCronHeartbeat(
 ): Promise<void> {
   const now = new Date().toISOString();
   const rows: [string, string][] = [
-    ["cron_last_run", now],
-    ["cron_last_expression", cron],
-    ["cron_last_detail", detail ?? ""],
+    [`cron:last:${cron || "(unnamed)"}`, now],
+    ["cron:last_any", now],
+  ];
+  if (detail) rows.push(["cron:last_detail", detail]);
+  for (const [key, value] of rows) {
+    await db
+      .prepare(
+        `INSERT INTO meta(key, value) VALUES(?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(key, value)
+      .run();
+  }
+}
+
+/**
+ * Record the outcome of a daily-brief attempt.
+ *
+ * Without this, a failed send is indistinguishable from a send nobody read.
+ */
+export async function recordDailyAttempt(
+  db: D1Database,
+  ok: boolean,
+  detail: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const rows: [string, string][] = [
+    ["daily:last_attempt", now],
+    ["daily:last_ok", ok ? "1" : "0"],
+    ["daily:last_detail", detail.slice(0, 300)],
   ];
   for (const [key, value] of rows) {
     await db
@@ -256,6 +286,15 @@ export interface CronHealth {
   ageMinutes: number | null;
   /** True when the gap is longer than a 10-minute cron can explain. */
   stale: boolean;
+  /** Last run time per registered cron expression. */
+  perCron: Record<string, { at: string; minutesAgo: number | null }>;
+  daily: {
+    lastAttempt: string | null;
+    ok: boolean | null;
+    detail: string;
+    /** Hours since the last successful brief, or null if it has never succeeded. */
+    hoursSinceOk: number | null;
+  };
 }
 
 /**
@@ -269,27 +308,40 @@ const CRON_STALE_MINUTES = 25;
 
 export async function cronHealth(db: D1Database): Promise<CronHealth> {
   const { results } = await db
-    .prepare(`SELECT key, value FROM meta WHERE key LIKE 'cron_last_%'`)
+    .prepare(`SELECT key, value FROM meta WHERE key LIKE 'cron:%' OR key LIKE 'daily:%'`)
     .all<{ key: string; value: string }>();
   const map = new Map((results ?? []).map((r) => [r.key, r.value]));
-  const lastRun = map.get("cron_last_run") ?? null;
-  const parsed = lastRun ? Date.parse(lastRun) : Number.NaN;
-  if (!lastRun || Number.isNaN(parsed)) {
-    return {
-      lastRun: null,
-      expression: map.get("cron_last_expression") ?? null,
-      detail: map.get("cron_last_detail") ?? "",
-      ageMinutes: null,
-      stale: true,
-    };
+
+  const minutesAgo = (iso: string | null | undefined): number | null => {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    return Number.isNaN(t) ? null : Math.floor((Date.now() - t) / 60_000);
+  };
+
+  const perCron: CronHealth["perCron"] = {};
+  for (const [key, value] of map) {
+    if (!key.startsWith("cron:last:")) continue;
+    const expr = key.slice("cron:last:".length);
+    perCron[expr] = { at: value, minutesAgo: minutesAgo(value) };
   }
-  const ageMinutes = Math.floor((Date.now() - parsed) / 60_000);
+
+  const ageMinutes = minutesAgo(map.get("cron:last_any") ?? null);
+  const okRaw = map.get("daily:last_ok");
+  const lastOkAt = okRaw === "1" ? map.get("daily:last_attempt") ?? null : null;
+
   return {
-    lastRun,
+    lastRun: map.get("cron:last_any") ?? null,
     expression: map.get("cron_last_expression") ?? null,
     detail: map.get("cron_last_detail") ?? "",
     ageMinutes,
-    stale: ageMinutes > CRON_STALE_MINUTES,
+    stale: ageMinutes === null || ageMinutes > CRON_STALE_MINUTES,
+    perCron,
+    daily: {
+      lastAttempt: map.get("daily:last_attempt") ?? null,
+      ok: okRaw === undefined ? null : okRaw === "1",
+      detail: map.get("daily:last_detail") ?? "",
+      hoursSinceOk: minutesAgo(lastOkAt) === null ? null : Math.floor(minutesAgo(lastOkAt)! / 60),
+    },
   };
 }
 

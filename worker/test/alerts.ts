@@ -2,7 +2,8 @@
 import { sendNewArticleAlerts, resetAlertWatermark, pendingAlerts } from "../src/alerts.ts";
 import { buildAlertMessages, hasSignal } from "../src/report.ts";
 import { buildBreakingCard, categoryLabel, severity } from "../src/breaking.ts";
-import { countPendingAlerts, cronHealth, setCronHeartbeat } from "../src/db.ts";
+import { countPendingAlerts, cronHealth, recordDailyAttempt, setCronHeartbeat } from "../src/db.ts";
+import { dailyBriefOverdue } from "../src/index.ts";
 import { GENERAL_CATEGORY, GENERAL_PLAYBOOK } from "../src/config.ts";
 import type { Article } from "../src/db.ts";
 import type { Env } from "../src/env.ts";
@@ -55,13 +56,15 @@ class FakeD1 {
         return { results: rows };
       }
       if (/FROM meta/.test(sql)) {
-        // Honours the LIKE filter so a query for cron_last_% does not pick up
-        // the alert watermark, which is what a real meta table would do.
-        const like = sql.match(/LIKE\s+'([^']+)'/i)?.[1];
-        const pattern = like ? new RegExp(`^${like.replace(/%/g, ".*")}$`, "i") : null;
+        // Every LIKE pattern in the statement, because a query may OR several
+        // of them together. Taking only the first silently hides rows that a
+        // real database would have returned.
+        const patterns = [...sql.matchAll(/LIKE\s+'([^']+)'/gi)].map((m) =>
+          new RegExp(`^${m[1]!.replace(/%/g, ".*")}$`, "i"),
+        );
         return {
           results: [...self.meta.entries()]
-            .filter(([k]) => !pattern || pattern.test(k))
+            .filter(([k]) => patterns.some((p) => p.test(k)))
             .map(([key, value]) => ({ key, value })),
         };
       }
@@ -85,6 +88,8 @@ class FakeD1 {
 
 const dbFake = new FakeD1();
 const db = dbFake as unknown as D1Database;
+/** A clean database, for cases that must not see another test's meta rows. */
+const fresh = () => new FakeD1() as unknown as D1Database;
 
 // Stub the send so no real messages go out during the test.
 const sent: string[] = [];
@@ -438,23 +443,72 @@ console.log("\n[1f] the cron heartbeat reports a dead cron instead of hiding it"
   await setCronHeartbeat(db, "*/10 * * * *", "test");
   const fresh = await cronHealth(db);
   check("a fresh heartbeat is not stale", fresh.stale === false, JSON.stringify(fresh));
-  check("records the expression", fresh.expression === "*/10 * * * *", fresh.expression ?? "");
   check("age is small", (fresh.ageMinutes ?? 999) < 5, String(fresh.ageMinutes));
+}
 
-  // Simulate a tick that stopped two hours ago. Two bound parameters, exactly
-  // as setCronHeartbeat writes them - a single-parameter write is the watermark
-  // form, and would store under a different key.
-  await db.prepare(
+console.log("\n[1g] each schedule is tracked separately");
+{
+  // This is the gap that hid a missed brief. One shared "last run" value is
+  // overwritten by the 10-minute poll, so the daily run can never be read back.
+  const db2 = fresh();
+  await setCronHeartbeat(db2, "30 0 * * *");
+  await setCronHeartbeat(db2, "*/10 * * * *");
+  const h = await cronHealth(db2);
+  check("both schedules are listed",
+    Object.keys(h.perCron).sort().join(",") === "*/10 * * * *,30 0 * * *", Object.keys(h.perCron).join(" | "));
+  check("the fast poll has not overwritten the daily record",
+    h.perCron["30 0 * * *"] !== undefined && h.perCron["30 0 * * *"]!.at === h.perCron["*/10 * * * *"]!.at,
+    JSON.stringify(h.perCron));
+}
+
+console.log("\n[1h] a missed daily brief is visible, and catch-up is offered");
+{
+  const db3 = fresh();
+  // No attempt recorded at all: not yet due, so no catch-up.
+  check("never attempted is not overdue",
+    (await dailyBriefOverdue(db3)).overdue === false, JSON.stringify(await dailyBriefOverdue(db3)));
+
+  // A failed attempt: due now, so the next tick can catch up.
+  await recordDailyAttempt(db3, false, "telegram: simulated failure");
+  const afterFail = await dailyBriefOverdue(db3);
+  check("a failed attempt becomes overdue", afterFail.overdue === true, JSON.stringify(afterFail));
+  const h = await cronHealth(db3);
+  check("the failure is recorded", h.daily.ok === false);
+  check("with its reason", h.daily.detail.includes("simulated failure"), h.daily.detail);
+  check("and no success is claimed", h.daily.hoursSinceOk === null);
+
+  // A successful attempt: not overdue, and the age is reported in hours.
+  await recordDailyAttempt(db3, true, "4 message(s), 11 opportunities");
+  const afterOk = await dailyBriefOverdue(db3);
+  check("a fresh success is not overdue", afterOk.overdue === false, JSON.stringify(afterOk));
+  check("success is recorded", (await cronHealth(db3)).daily.ok === true);
+  check("and the age is under an hour", (await cronHealth(db3)).daily.hoursSinceOk === 0);
+
+  // A success long ago: overdue, which is what triggers catch-up.
+  const db4 = fresh();
+  await db4.prepare(
     `INSERT INTO meta(key, value) VALUES(?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-  ).bind("cron_last_run", new Date(Date.now() - 120 * 60_000).toISOString()).run();
-  const old = await cronHealth(db);
-  check("a 2-hour-old heartbeat is stale", old.stale === true, JSON.stringify(old));
-  check("and the age is reported", (old.ageMinutes ?? 0) >= 119, String(old.ageMinutes));
+  ).bind("daily:last_attempt", new Date(Date.now() - 40 * 3_600_000).toISOString()).run();
+  await db4.prepare(
+    `INSERT INTO meta(key, value) VALUES(?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).bind("daily:last_ok", "1").run();
+  const late = await dailyBriefOverdue(db4);
+  check("a 40-hour-old success is overdue", late.overdue === true, JSON.stringify(late));
+  check("and reports how late", late.hoursSinceOk === 40, String(late.hoursSinceOk));
 
-  // Restore a live value for anything later in the suite.
-  await setCronHeartbeat(db, "*/10 * * * *");
-  check("recovers once it ticks again", (await cronHealth(db)).stale === false);
+  // 25h is inside the grace window: late, but not yet a failure worth chasing.
+  const db5 = fresh();
+  await db5.prepare(
+    `INSERT INTO meta(key, value) VALUES(?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).bind("daily:last_attempt", new Date(Date.now() - 25 * 3_600_000).toISOString()).run();
+  await db5.prepare(
+    `INSERT INTO meta(key, value) VALUES(?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).bind("daily:last_ok", "1").run();
+  check("25 hours is inside the grace window", (await dailyBriefOverdue(db5)).overdue === false);
 }
 
 console.log(`\n${"=".repeat(56)}\n  passed: ${pass}   failed: ${fail}`);

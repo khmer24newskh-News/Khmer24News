@@ -31,7 +31,7 @@ import { renderIntel } from "./intelhtml.ts";
 import { fetchFxRates } from "./market.ts";
 import { fetchAllCloudSources, unwrapBingUrl } from "./cloudfeeds.ts";
 import { CLOUD_SOURCES, LISTING_SOURCES, SOURCE_BY_ID, type Section } from "./registry.ts";
-import { countPendingAlerts, cronHealth, setCronHeartbeat } from "./db.ts";
+import { countPendingAlerts, cronHealth, recordDailyAttempt, setCronHeartbeat } from "./db.ts";
 import { renderSettings } from "./settingshtml.ts";
 import { probeAlternatives, probeGoogle, tuneFeeds, tuneQueries, winner } from "./diag.ts";
 import {
@@ -112,6 +112,107 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
 
 const redirect = (location: string) => new Response(null, { status: 302, headers: { location } });
 
+/**
+ * Has the daily brief gone unsent for long enough to be worth retrying?
+ *
+ * A brief is expected roughly every 24 hours. Waiting a further few hours before
+ * catching up means a missed run is a delay rather than a loss, while still
+ * leaving a clear margin so an ordinary late tick is not mistaken for an outage.
+ */
+const DAILY_INTERVAL_HOURS = 24;
+const DAILY_GRACE_HOURS = 6;
+
+export async function dailyBriefOverdue(
+  db: D1Database,
+): Promise<{ overdue: boolean; hoursSinceOk: number | null }> {
+  const health = await cronHealth(db);
+  // Never sent, or the last attempt failed: due as soon as the clock allows.
+  if (health.daily.hoursSinceOk === null) {
+    return { overdue: health.daily.lastAttempt !== null, hoursSinceOk: null };
+  }
+  const due = health.daily.hoursSinceOk > DAILY_INTERVAL_HOURS + DAILY_GRACE_HOURS;
+  return { overdue: due, hoursSinceOk: health.daily.hoursSinceOk };
+}
+
+export interface DailyBriefResult {
+  sent: number;
+  messages: number;
+  opportunities: number;
+  skipped: boolean;
+  detail: string;
+}
+
+/**
+ * Build and send the brief, recording the outcome either way.
+ *
+ * Recording is not optional decoration. A brief that fails silently is
+ * indistinguishable from one that was never due, which is precisely how this went
+ * unnoticed: the report was being built and the sends were failing, and nothing
+ * wrote that down.
+ */
+export async function sendDailyBrief(env: Env, label: string): Promise<DailyBriefResult> {
+  // Always awaited: an unawaited write at the end of a cron tick can be cut off
+  // when the isolate is recycled, which would lose the very record this exists
+  // to keep.
+  const fail = async (detail: string, skipped = false): Promise<DailyBriefResult> => {
+    console.log(`${label} brief ${skipped ? "skipped" : "FAILED"}: ${detail}`);
+    try {
+      await recordDailyAttempt(env.DB, !skipped, detail);
+    } catch (err) {
+      console.log(`${label} could not record the outcome: ${(err as Error).message}`);
+    }
+    return { sent: 0, messages: 0, opportunities: 0, skipped, detail };
+  };
+
+  let prefs;
+  try {
+    prefs = await loadPrefs(env.DB);
+  } catch (err) {
+    return fail(`prefs unreadable: ${(err as Error).message}`);
+  }
+  if (!prefs.autoSend) {
+    return fail("auto-send is off in settings", true);
+  }
+
+  let messages: string[];
+  let opportunities = 0;
+  try {
+    const stored = await getArticles(env.DB, { limit: 200, hours: prefs.hours });
+    const rows = filterRows(stored, prefs);
+    const fx = await fetchFxRates();
+    let report = buildIntelReport(rows, fx, coverageWarnings());
+    // The rule engine is the backbone, so an AI failure still yields a full report.
+    if (prefs.ai) {
+      const ai = await runAnalyst(env, rows, fx);
+      applyAnalysis(report, ai);
+      console.log(
+        `${label} analyst: used=${ai.used} reason=${ai.reason} ` +
+          `tokens=${ai.tokensIn + ai.tokensOut} opps=${ai.opportunities.length}`,
+      );
+    }
+    report = applyPrefs(report, prefs);
+    opportunities = report.opportunities.length;
+    messages = renderIntelMessages(report);
+  } catch (err) {
+    return fail(`build threw: ${(err as Error).name}: ${(err as Error).message}`);
+  }
+
+  let sent = 0;
+  for (const text of messages) {
+    const r = await sendTelegram(env, text);
+    if (!r.ok) return fail(`telegram: ${r.detail}`);
+    sent++;
+  }
+  const detail = `${sent} message(s), ${opportunities} opportunities`;
+  console.log(`${label} brief sent: ${detail}`);
+  try {
+    await recordDailyAttempt(env.DB, true, detail);
+  } catch (err) {
+    console.log(`${label} could not record the outcome: ${(err as Error).message}`);
+  }
+  return { sent, messages: messages.length, opportunities, skipped: false, detail };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -130,11 +231,14 @@ export default {
       switch (true) {
         case path === "/health": {
           const cron = await cronHealth(env.DB);
+          // The brief is expected every ~24h. Anything past 30h means you have
+          // missed one, and that is worth shouting about rather than reporting
+          // ok:true next to a stale number.
+          const briefMissed =
+            cron.daily.lastAttempt !== null &&
+            (cron.daily.hoursSinceOk === null || cron.daily.hoursSinceOk > 30);
           return json({
-            // A stale cron means no news is arriving, so it is reported at the
-            // top rather than buried: `ok` is false when the system is not
-            // actually doing its job.
-            ok: !cron.stale,
+            ok: !cron.stale && !briefMissed,
             platform: "cloudflare-worker",
             articles: await countAll(env.DB),
             telegram_configured: telegramConfigured(env),
@@ -145,12 +249,28 @@ export default {
             cron_last_run: cron.lastRun,
             cron_minutes_since_run: cron.ageMinutes,
             cron_stale: cron.stale,
-            ...(cron.expression ? { cron_expression: cron.expression } : {}),
+            // Per schedule, because one shared value cannot answer "did the
+            // daily run?" once a faster cron keeps overwriting it.
+            cron_per_schedule: cron.perCron,
+            daily_brief: {
+              last_attempt: cron.daily.lastAttempt,
+              last_ok: cron.daily.ok,
+              hours_since_last_ok: cron.daily.hoursSinceOk,
+              detail: cron.daily.detail,
+            },
             ...(cron.stale
               ? {
                   warning:
                     "The 10-minute cron has not run recently, so no new articles are arriving. " +
                     "Check the crons in wrangler.toml and redeploy.",
+                }
+              : {}),
+            ...(briefMissed
+              ? {
+                  warning:
+                    `The daily brief has not been sent successfully for ` +
+                    `${cron.daily.hoursSinceOk === null ? "over a day" : `${cron.daily.hoursSinceOk} hours`}. ` +
+                    "Last detail: " + (cron.daily.detail || "none recorded"),
                 }
               : {}),
           });
@@ -861,35 +981,26 @@ ${messages
             if (alerts.error) console.log(`cron[${cron}] alerts FAILED: ${alerts.error}`);
           }
 
-          // The 07:30 brief, built from the saved preferences.
-          if (isDailyRun && dailyDigest) {
-            const prefs = await loadPrefs(env.DB);
-            if (!prefs.autoSend) {
-              console.log(`cron[${cron}] auto-send is off in settings - skipping the brief`);
-            } else {
-              const stored = await getArticles(env.DB, { limit: 200, hours: prefs.hours });
-              const rows = filterRows(stored, prefs);
-              const fx = await fetchFxRates();
-              let report = buildIntelReport(rows, fx, coverageWarnings());
-              // One AI call per daily report. The rule engine is the backbone,
-              // so a failure here still produces a full report.
-              if (prefs.ai) {
-                const ai = await runAnalyst(env, rows, fx);
-                applyAnalysis(report, ai);
-                console.log(
-                  `cron[${cron}] analyst: used=${ai.used} reason=${ai.reason} ` +
-                    `tokens=${ai.tokensIn + ai.tokensOut} opps=${ai.opportunities.length}`,
-                );
-              }
-              report = applyPrefs(report, prefs);
-              for (const text of renderIntelMessages(report)) {
-                const r = await sendTelegram(env, text);
-                console.log(`cron[${cron}] intel: ${r.ok ? "ok" : "FAILED"} - ${r.detail}`);
-                if (!r.ok) break;
-              }
+          // The 07:30 brief.
+          //
+          // Also runs on an ordinary tick if the daily one has not succeeded for
+          // a while. A missed brief used to be lost outright: the tick either
+          // happened or it did not, and nothing retried. Catch-up turns a
+          // failure into a delay instead of a silence.
+          const dailyDue = await dailyBriefOverdue(env.DB);
+          if ((isDailyRun && dailyDigest) || (dailyDue.overdue && dailyDigest)) {
+            const why = isDailyRun ? "scheduled" : "catch-up";
+            const r = await sendDailyBrief(env, `cron[${cron}] ${why}`);
+            console.log(
+              `cron[${cron}] brief (${why}): ${r.sent}/${r.messages} message(s) sent, ` +
+                `${r.opportunities} opportunities - ${r.detail}`,
+            );
+            if (isDailyRun && !dailyDigest) {
+              console.log(`cron[${cron}] DAILY_DIGEST is off - brief suppressed`);
+            }
+            if (dailyDue.overdue && !isDailyRun) {
               console.log(
-                `cron[${cron}] intel: ${report.sections.length} sections, ` +
-                  `${report.opportunities.length} opportunities, fx=${report.fx ? "ok" : "unavailable"}`,
+                `cron[${cron}] brief was overdue (${dailyDue.hoursSinceOk}h since the last success) - caught up`,
               );
             }
           }
