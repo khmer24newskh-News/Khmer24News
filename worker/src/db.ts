@@ -295,6 +295,8 @@ export interface CronHealth {
     /** Hours since the last successful brief, or null if it has never succeeded. */
     hoursSinceOk: number | null;
   };
+  /** The last phase failure, or "" when every phase is healthy. */
+  lastError: string;
 }
 
 /**
@@ -311,7 +313,8 @@ export async function cronHealth(db: D1Database): Promise<CronHealth> {
     .prepare(
       `SELECT key, value FROM meta
        WHERE key LIKE 'cron:%' OR key LIKE 'daily:%'
-          OR key IN ('cron_last_run', 'cron_last_expression', 'cron_last_detail')`,
+          OR key IN ('cron_last_run', 'cron_last_expression', 'cron_last_detail',
+                     'cron_last_error')`,
     )
     .all<{ key: string; value: string }>();
   const map = new Map((results ?? []).map((r) => [r.key, r.value]));
@@ -351,6 +354,7 @@ export async function cronHealth(db: D1Database): Promise<CronHealth> {
       detail: map.get("daily:last_detail") ?? "",
       hoursSinceOk: minutesAgo(lastOkAt) === null ? null : Math.floor(minutesAgo(lastOkAt)! / 60),
     },
+    lastError: map.get("cron:last_error") ?? "",
   };
 }
 

@@ -258,6 +258,7 @@ export default {
               hours_since_last_ok: cron.daily.hoursSinceOk,
               detail: cron.daily.detail,
             },
+            ...(cron.lastError ? { cron_last_error: cron.lastError } : {}),
             ...(cron.stale
               ? {
                   warning:
@@ -927,6 +928,22 @@ ${messages
             return;
           }
 
+          // Each phase is isolated. They used to share one try/catch, so a failure
+          // while polling or alerting silently prevented the daily brief - the one
+          // thing this system exists to produce. A phase that fails now records
+          // why, and the remaining phases still run.
+          const recordError = async (phase: string, err: unknown): Promise<void> => {
+            const message = (err as Error)?.message ?? String(err);
+            const detail = `${phase}: ${(err as Error)?.name ?? "Error"}: ${message}`.slice(0, 300);
+            console.log(`cron[${cron}] ${detail}`);
+            try {
+              await env.DB.prepare(
+                `INSERT INTO meta(key, value) VALUES('cron:last_error', ?)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+              ).bind(detail).run();
+            } catch { /* if even this fails there is nothing more to do */ }
+          };
+
           // Discovery. "poll" is the mode that needs nothing local: the Worker
           // fetches every source itself. "push" is the legacy path where articles
           // arrive via POST /ingest, kept as a fallback.
@@ -934,51 +951,59 @@ ${messages
           if (discovery === "push") {
             console.log(`cron[${cron}] discovery=push - articles come from /ingest, not polled here`);
           } else {
-            const fetched = await fetchAllCloudSources({
-              lookbackHours: lookback(env),
-              maxPerSource: num(env.MAX_ITEMS_PER_SOURCE, 12),
-              retry429: true,
-            });
-            const ingested = await ingestEntries(
-              env.DB,
-              fetched.articles.map((a) => ({
-                source: a.sourceId,
-                title: a.title,
-                link: a.url,
-                published: a.published,
-                age_hours: a.ageHours,
-                summary: a.summary,
-              })),
-              lookback(env),
-            );
-            console.log(
-              `cron[${cron}] poll: ${fetched.articles.length} article(s) from ` +
-                `${fetched.ok} source(s), ${ingested.inserted} new, ${fetched.ms}ms`,
-            );
-            for (const f of fetched.failed) {
-              console.log(`cron[${cron}] poll fail ${f.sourceId}: ${f.reason}`);
-            }
-            const empty = Object.entries(fetched.counts).filter(([, n]) => n === 0);
-            if (empty.length) {
-              console.log(`cron[${cron}] poll empty: ${empty.map(([id]) => id).join(", ")}`);
+            try {
+              const fetched = await fetchAllCloudSources({
+                lookbackHours: lookback(env),
+                maxPerSource: num(env.MAX_ITEMS_PER_SOURCE, 12),
+                retry429: true,
+              });
+              const ingested = await ingestEntries(
+                env.DB,
+                fetched.articles.map((a) => ({
+                  source: a.sourceId,
+                  title: a.title,
+                  link: a.url,
+                  published: a.published,
+                  age_hours: a.ageHours,
+                  summary: a.summary,
+                })),
+                lookback(env),
+              );
+              console.log(
+                `cron[${cron}] poll: ${fetched.articles.length} article(s) from ` +
+                  `${fetched.ok} source(s), ${ingested.inserted} new, ${fetched.ms}ms`,
+              );
+              for (const f of fetched.failed) {
+                console.log(`cron[${cron}] poll fail ${f.sourceId}: ${f.reason}`);
+              }
+              const empty = Object.entries(fetched.counts).filter(([, n]) => n === 0);
+              if (empty.length) {
+                console.log(`cron[${cron}] poll empty: ${empty.map(([id]) => id).join(", ")}`);
+              }
+            } catch (err) {
+              await recordError("poll failed", err);
             }
           }
 
           // Stream alerts on every tick, whatever the discovery mode.
           if (streamAlerts) {
-            const alerts = await sendNewArticleAlerts(env, {
-              perMessage: num(env.ALERT_BATCH_SIZE, DEFAULT_ALERT_BATCH_SIZE),
-              maxPerTick: num(env.ALERT_MAX_PER_TICK, DEFAULT_ALERT_MAX_PER_TICK),
-            });
-            if (alerts.backfilled) {
-              console.log(`cron[${cron}] alerts primed at id ${alerts.watermark} (nothing sent)`);
-            } else if (alerts.sentArticles > 0) {
-              console.log(
-                `cron[${cron}] alerts: ${alerts.sentArticles} article(s) in ` +
-                  `${alerts.sentMessages} message(s), ${alerts.pending} still pending`,
-              );
+            try {
+              const alerts = await sendNewArticleAlerts(env, {
+                perMessage: num(env.ALERT_BATCH_SIZE, DEFAULT_ALERT_BATCH_SIZE),
+                maxPerTick: num(env.ALERT_MAX_PER_TICK, DEFAULT_ALERT_MAX_PER_TICK),
+              });
+              if (alerts.backfilled) {
+                console.log(`cron[${cron}] alerts primed at id ${alerts.watermark} (nothing sent)`);
+              } else if (alerts.sentArticles > 0) {
+                console.log(
+                  `cron[${cron}] alerts: ${alerts.sentArticles} article(s) in ` +
+                    `${alerts.sentMessages} message(s), ${alerts.pending} still pending`,
+                );
+              }
+              if (alerts.error) console.log(`cron[${cron}] alerts FAILED: ${alerts.error}`);
+            } catch (err) {
+              await recordError("alerts failed", err);
             }
-            if (alerts.error) console.log(`cron[${cron}] alerts FAILED: ${alerts.error}`);
           }
 
           // The 07:30 brief.
