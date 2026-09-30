@@ -53,6 +53,27 @@ function check(name: string, condition: boolean, detail = "") {
   }
 }
 
+let skipped = 0;
+/**
+ * Report an assertion that could not be evaluated, without counting it as a
+ * failure.
+ *
+ * Some of this suite exercises *live* publisher feeds. A feed that publishes
+ * nothing inside the test window says nothing about the code, and failing on it
+ * turns a third party's silence into a red build. The parsing and filtering logic
+ * itself is covered deterministically by test/intel.ts.
+ */
+function skip(name: string, why: string) {
+  skipped++;
+  console.log(`  SKIP  ${name} - ${why}`);
+}
+
+/** True when the feed carries at least one entry inside the window. */
+function hasFreshEntries(entries: { published: string | null }[], hours: number): boolean {
+  const cutoff = Date.now() - hours * 3_600_000;
+  return entries.some((e) => e.published !== null && Date.parse(e.published) > cutoff);
+}
+
 function eq<T>(name: string, actual: T, expected: T) {
   check(name, actual === expected, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
@@ -104,7 +125,11 @@ check("sourceHostOk rejects wrong domain", !sourceHostOk(akpSource, imf[0]!),
 console.log("\n[3] Filters applied to real feeds");
 const stats = emptyStats();
 const cands = buildCandidates(akpSource, akp, 72, 15, stats);
-check("candidates found within window", cands.length > 0, `got ${cands.length}`);
+if (hasFreshEntries(akp, 72)) {
+  check("candidates found within window", cands.length > 0, `got ${cands.length}`);
+} else {
+  skip("candidates found within window", "the live AKP feed had nothing inside 72h");
+}
 check("stale entries excluded", stats.stale > 0, `stale=${stats.stale}`);
 check("junk placeholder pages excluded", cands.every((c) => !isJunkTitle(c.title)),
   cands.filter((c) => isJunkTitle(c.title)).map((c) => c.title).join(", "));
@@ -124,8 +149,14 @@ eq("strip longest alias first",
   stripSourceSuffix("Agrifood News - Cambodian Investment Board (CIB)", "CIB / CDC", "Cambodian Investment Board (CIB)"),
   "Agrifood News");
 eq("no suffix to strip", stripSourceSuffix("Cambodia Sees Opportunity to Strengthen Trade", "AKP", "Agence Kampuchea Presse"), "Cambodia Sees Opportunity to Strengthen Trade");
-const cleaned = cands[0]!;
-check("real title has no trailing publisher", !/ - (Agence Kampuchea Presse|ក្រសួង)/.test(cleaned.title), cleaned.title);
+// Guarded: an empty live feed must not crash the suite, which is what happened
+// on CI when the downloaded feed had nothing recent in it.
+const cleaned = cands[0];
+if (cleaned) {
+  check("real title has no trailing publisher", !/ - (Agence Kampuchea Presse|ក្រសួង)/.test(cleaned.title), cleaned.title);
+} else {
+  skip("real title has no trailing publisher", "no candidate survived the window to inspect");
+}
 
 // ---------------------------------------------------------------- junk
 console.log("\n[5] Junk title rejection");
@@ -239,7 +270,12 @@ check("every source has a default or is intentionally null",
   SOURCES.every((s) => s.defaultCategory === null || typeof s.defaultCategory === "string"));
 
 console.log(`\n${"=".repeat(56)}`);
-console.log(`  passed: ${pass}   failed: ${fail}`);
+console.log(`  passed: ${pass}   failed: ${fail}   skipped: ${skipped}`);
+if (skipped > 0) {
+  // Say so plainly. A silent skip reads as a passing test, and the next person
+  // assumes a live-feed assertion ran when it did not.
+  console.log("  skipped assertions depend on live publisher feeds publishing recently.");
+}
 if (fail > 0) {
   console.log("\n  failures:");
   for (const f of failures) console.log(`   - ${f}`);
