@@ -22,14 +22,18 @@ class FakeD1 {
 
     const run = async () => {
       if (/INSERT INTO meta/.test(sql)) {
+        // Three shapes exist in the codebase, and the stub has to tell them
+        // apart or rows land under the wrong key:
+        //   VALUES(?, ?)                      - key and value bound
+        //   VALUES('literal', ?)              - key inline, value bound
+        //   VALUES('literal_key')             - the watermark, no bound params
+        const inline = sql.match(/VALUES\s*\(\s*'([^']+)'/i)?.[1];
         if (api.params.length >= 2) {
-          // Generic upsert: the heartbeat binds key and value as two parameters,
-          // whereas setWatermark inlines the key as a SQL literal and binds only
-          // the value. Storing both under the watermark key would make the
-          // heartbeat untestable.
           self.meta.set(String(api.params[0]), String(api.params[1]));
+        } else if (inline) {
+          self.meta.set(inline, String(api.params[0] ?? ""));
         } else {
-          self.meta.set("alert_watermark_id", String(api.params[0]));
+          self.meta.set("alert_watermark_id", String(api.params[0] ?? ""));
         }
         return { success: true, meta: { changes: 1 } };
       }
@@ -57,14 +61,18 @@ class FakeD1 {
       }
       if (/FROM meta/.test(sql)) {
         // Every LIKE pattern in the statement, because a query may OR several
-        // of them together. Taking only the first silently hides rows that a
-        // real database would have returned.
+        // of them together, plus any literal key list. Taking only the first
+        // pattern silently hides rows a real database would have returned -
+        // which is exactly how the pre-migration key went missing once already.
         const patterns = [...sql.matchAll(/LIKE\s+'([^']+)'/gi)].map((m) =>
           new RegExp(`^${m[1]!.replace(/%/g, ".*")}$`, "i"),
         );
+        const listed = [...sql.matchAll(/key\s+IN\s+\(([^)]*)\)/gi)]
+          .flatMap((m) => (m[1]!.match(/'([^']+)'/g) ?? []).map((s) => s.replace(/'/g, "")));
+        const keep = (k: string) => patterns.some((p) => p.test(k)) || listed.includes(k);
         return {
           results: [...self.meta.entries()]
-            .filter(([k]) => patterns.some((p) => p.test(k)))
+            .filter(([k]) => keep(k))
             .map(([key, value]) => ({ key, value })),
         };
       }
@@ -509,6 +517,20 @@ console.log("\n[1h] a missed daily brief is visible, and catch-up is offered");
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).bind("daily:last_ok", "1").run();
   check("25 hours is inside the grace window", (await dailyBriefOverdue(db5)).overdue === false);
+}
+
+console.log("\n[1i] the pre-migration key is still readable");
+{
+  // Deploying the new heartbeat initially made /health report a stale cron,
+  // because the old key used an underscore and did not match the new pattern.
+  // A false alarm on the check people are told to trust is worse than none.
+  const db6 = fresh();
+  await db6.prepare(
+    `INSERT INTO meta(key, value) VALUES('cron_last_run', ?)`,
+  ).bind(new Date().toISOString()).run();
+  const h = await cronHealth(db6);
+  check("legacy key is found", h.lastRun !== null, JSON.stringify(h));
+  check("and does not read as stale", h.stale === false, JSON.stringify(h));
 }
 
 console.log(`\n${"=".repeat(56)}\n  passed: ${pass}   failed: ${fail}`);

@@ -308,7 +308,11 @@ const CRON_STALE_MINUTES = 25;
 
 export async function cronHealth(db: D1Database): Promise<CronHealth> {
   const { results } = await db
-    .prepare(`SELECT key, value FROM meta WHERE key LIKE 'cron:%' OR key LIKE 'daily:%'`)
+    .prepare(
+      `SELECT key, value FROM meta
+       WHERE key LIKE 'cron:%' OR key LIKE 'daily:%'
+          OR key IN ('cron_last_run', 'cron_last_expression', 'cron_last_detail')`,
+    )
     .all<{ key: string; value: string }>();
   const map = new Map((results ?? []).map((r) => [r.key, r.value]));
 
@@ -330,11 +334,16 @@ export async function cronHealth(db: D1Database): Promise<CronHealth> {
   const lastOkAt = okRaw === "1" ? map.get("daily:last_attempt") ?? null : null;
 
   return {
-    lastRun: map.get("cron:last_any") ?? null,
+    // Falls back to the pre-migration key. Without this, deploying the
+    // per-schedule heartbeat makes /health report a stale cron until the first
+    // tick lands - a false alarm on the one check people are told to trust.
+    lastRun: map.get("cron:last_any") ?? map.get("cron_last_run") ?? null,
     expression: map.get("cron_last_expression") ?? null,
     detail: map.get("cron_last_detail") ?? "",
-    ageMinutes,
-    stale: ageMinutes === null || ageMinutes > CRON_STALE_MINUTES,
+    ageMinutes: ageMinutes ?? minutesAgo(map.get("cron_last_run") ?? null),
+    stale:
+      (ageMinutes ?? minutesAgo(map.get("cron_last_run") ?? null)) === null ||
+      (ageMinutes ?? minutesAgo(map.get("cron_last_run") ?? null))! > CRON_STALE_MINUTES,
     perCron,
     daily: {
       lastAttempt: map.get("daily:last_attempt") ?? null,
