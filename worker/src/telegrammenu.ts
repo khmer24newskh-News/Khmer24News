@@ -10,7 +10,8 @@ import { applyPrefs, filterRows, loadPrefs, savePrefs, ALL_SECTIONS, URGENCIES, 
 import { SECTION_META, type Section } from "./registry.ts";
 import { getArticles } from "./db.ts";
 import { fetchFxRates } from "./market.ts";
-import { buildIntelReport, renderIntelMessages, applyAnalysis } from "./intel.ts";
+import { buildIntelReport, renderIntelMessages, applyAnalysis, type IntelReport } from "./intel.ts";
+import { TELEGRAM_MAX_LEN } from "./config.ts";
 import { runAnalyst } from "./analyst.ts";
 import type { Env } from "./env.ts";
 
@@ -112,6 +113,9 @@ export function buildKeyboard(prefs: Prefs): unknown {
       [
         { text: "\u{1F4E4} Send my brief now", callback_data: `${MENU_PREFIX}:send` },
         { text: "\u{1F4CA} Status", callback_data: `${MENU_PREFIX}:status` },
+      ],
+      [
+        { text: "\u{1F4CB} See a section now", callback_data: `${MENU_PREFIX}:browse` },
       ],
       [
         { text: "\u{1F310} Full settings in the dashboard", url: "" },
@@ -275,4 +279,66 @@ export async function webhookInfo(env: Env): Promise<Record<string, unknown>> {
   } catch (err) {
     return { ok: false, description: `${(err as Error).name}` };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Browsing: see one section's content on demand
+// ---------------------------------------------------------------------------
+
+/** Callback payload for "show me this section". */
+export const SECTION_PREFIX = `${MENU_PREFIX}:see:`;
+
+/**
+ * Every section, as a picker.
+ *
+ * The toggle keyboard controls what reaches the daily brief. This is the other
+ * half: tapping a section here shows what is in it *right now*, whether or not
+ * it is switched on for the brief. Being able to look at one thing without
+ * rewriting the whole brief is the point.
+ */
+export function buildSectionPicker(prefs: Prefs): unknown {
+  return {
+    inline_keyboard: [
+      ...ALL_SECTIONS.map((s) => {
+        const m = SECTION_META[s];
+        const on = prefs.sections.includes(s);
+        return [
+          {
+            text: `${on ? "\u{2705}" : "\u{2B1C}"} ${m.emoji} ${m.title}`,
+            callback_data: `${SECTION_PREFIX}${s}`,
+          },
+        ];
+      }),
+      [{ text: "\u{1F519} Back to menu", callback_data: `${MENU_PREFIX}:back` }],
+    ],
+  };
+}
+
+/** Keyboard under a section, so the next thing you want is one tap away. */
+export function buildSectionFooter(): unknown {
+  return {
+    inline_keyboard: [
+      [
+        { text: "\u{1F4CB} Another section", callback_data: `${MENU_PREFIX}:browse` },
+        { text: "\u{1F4E4} Send the full brief", callback_data: `${MENU_PREFIX}:send` },
+      ],
+      [{ text: "\u{1F519} Back to menu", callback_data: `${MENU_PREFIX}:back` }],
+    ],
+  };
+}
+
+/**
+ * Render one section for reading.
+ *
+ * Preferences are not applied to the content, only used to choose the window and
+ * the sources. Asking to see a section you switched off must show it rather than
+ * quietly return nothing, which would be indistinguishable from an empty section.
+ */
+export function renderSectionView(report: IntelReport, sectionKey: Section): string {
+  const block = report.sections.find((s) => s.section === sectionKey);
+  const meta = SECTION_META[sectionKey];
+  if (!block) return `${meta.emoji} ${meta.title}\n\nNot available.`;
+  const head = [`${meta.emoji} ${meta.title}`];
+  if (block.empty) return [...head, "", "Nothing in this section right now.", ""].join("\n");
+  return [...head, "", ...block.lines].join("\n").slice(0, TELEGRAM_MAX_LEN);
 }

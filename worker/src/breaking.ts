@@ -359,8 +359,3 @@ export function buildBreakingCard(row: Article): string {
 
   return lines.join("\n").slice(0, TELEGRAM_MAX_LEN);
 }
-
-/** Compact one-liner, for the articles that are not worth interrupting for. */
-export function buildCompactLine(row: Article): string {
-  return `• ${row.title}\n   ${publisherName(row)} | ${row.source}\n   ${row.url}`;
-}

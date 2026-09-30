@@ -39,8 +39,8 @@ import {
 } from "./prefs.ts";
 import { buildStatus } from "./status.ts";
 import {
-  CLOSE, MENU_PREFIX, NO_KEYBOARD, SEND_NOW, buildAndSendBrief, buildKeyboardWithUrl,
-  editMessageText, handleToggle, menuCaption, sendWithMenu, setWebhook, webhookInfo,
+  buildSectionFooter, buildSectionPicker, CLOSE, MENU_PREFIX, SECTION_PREFIX, NO_KEYBOARD, SEND_NOW, buildAndSendBrief, buildKeyboardWithUrl,
+  editMessageText, handleToggle, menuCaption, renderSectionView, sendWithMenu, setWebhook, webhookInfo,
 } from "./telegrammenu.ts";
 import type { Env } from "./env.ts";
 
@@ -709,6 +709,51 @@ ${messages
               await answer();
               await show("Menu closed. Type /menu to open it again.", NO_KEYBOARD);
               return json({ handled: "close" });
+            }
+
+            // Browse: list every section so one can be opened on its own.
+            if (cb.data === `${MENU_PREFIX}:browse`) {
+              await answer();
+              const prefs = await loadPrefs(env.DB);
+              const r = await sendWithMenu(
+                env, to,
+                "\u{1F4CB} Which one do you want to see?\n\n" +
+                  "This shows what is in a section right now. It does not change " +
+                  "your daily brief - use the menu for that.",
+                buildSectionPicker(prefs),
+              );
+              return json({ handled: "browse", result: r });
+            }
+
+            // Open one section's content.
+            if (cb.data.startsWith(SECTION_PREFIX)) {
+              const key = cb.data.slice(SECTION_PREFIX.length) as Section;
+              await answer("Loading...");
+              try {
+                const prefs = await loadPrefs(env.DB);
+                const stored = await getArticles(env.DB, { limit: 200, hours: prefs.hours });
+                const rows = filterRows(stored, prefs);
+                const fx = await fetchFxRates();
+                // No applyPrefs: a section you switched off should still open.
+                const report = buildIntelReport(rows, fx, []);
+                const r = await sendWithMenu(env, to, renderSectionView(report, key), buildSectionFooter());
+                return json({ handled: "section", section: key, result: r });
+              } catch (err) {
+                const r = await sendWithMenu(
+                  env, to,
+                  `Could not load that section: ${(err as Error).message}`,
+                  buildSectionFooter(),
+                );
+                return json({ handled: "section", section: key, error: (err as Error).message, result: r });
+              }
+            }
+
+            // Back to the settings keyboard.
+            if (cb.data === `${MENU_PREFIX}:back`) {
+              await answer();
+              const prefs = await loadPrefs(env.DB);
+              const r = await sendWithMenu(env, to, menuCaption(prefs), buildKeyboardWithUrl(prefs, settingsUrl));
+              return json({ handled: "back", result: r });
             }
 
             // Status: a fresh message rather than an edit, because a status
