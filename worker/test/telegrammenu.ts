@@ -1,7 +1,7 @@
 /** Tests for the Telegram menu: keyboard shape, tap handling, and the locks. */
 import {
   CLOSE, MENU_PREFIX, NO_KEYBOARD, SEND_NOW, buildKeyboard, buildKeyboardWithUrl,
-  handleToggle, menuCaption,
+  buildSectionFooter, handleToggle, menuCaption,
 } from "../src/telegrammenu.ts";
 import { ALL_SECTIONS, DEFAULT_PREFS, loadPrefs, savePrefs, URGENCIES, type Prefs } from "../src/prefs.ts";
 import { SECTION_META } from "../src/registry.ts";
@@ -45,7 +45,7 @@ const fresh = () => new PrefsD1() as PrefsD1 & D1Database;
 const tap = (db: D1Database, data: string) => handleToggle(db, `${MENU_PREFIX}:${data}`);
 const rows = (kb: unknown) => (kb as { inline_keyboard: { text: string; callback_data?: string; url?: string }[][] }).inline_keyboard;
 const flat = (kb: unknown) => rows(kb).flat();
-const sectionRows = (kb: unknown) => rows(kb).filter((r) => r[0]!.callback_data?.includes(":sec:"));
+const sectionRows = (kb: unknown) => rows(kb).filter((r) => r[0]!.callback_data?.includes(":see:"));
 
 console.log("[1] keyboard shape");
 const kb = buildKeyboard(DEFAULT_PREFS);
@@ -74,7 +74,8 @@ const ticks = sectionRows(offKb).filter((r) => r[0]!.text.startsWith("\u2705")).
 check("inactive sections show an empty box", boxes === 5, String(boxes));
 check("the one active toggleable section shows a tick", ticks === 1, String(ticks));
 check("locked sections carry no mark at all",
-  sectionRows(offKb).filter((r) => r[0]!.text.includes("always on")).length === 2);
+  sectionRows(offKb).filter((r) => r[0]!.text.includes("always in")).length === 2,
+  String(sectionRows(offKb).filter((r) => r[0]!.text.includes("always in")).length));
 check("AI state shown on the button",
   flat(buildKeyboard({ ...DEFAULT_PREFS, ai: false })).some((b) => b.callback_data === `${MENU_PREFIX}:ai` && b.text.includes("off")));
 check("urgency level shown on the button",
@@ -92,17 +93,54 @@ check("the bare keyboard has no url", !flat(kb).some((b) => b.url));
 console.log("\n[4] the locks");
 const moneyRow = sectionRows(kb).find((r) => r[0]!.text.includes("MONEY"))!;
 const oppRow = sectionRows(kb).find((r) => r[0]!.text.includes("OPPORTUNIT"))!;
-check("money cannot be turned off", moneyRow[0]!.text.includes("always on"), moneyRow[0]!.text);
-check("opportunity cannot be turned off", oppRow[0]!.text.includes("always on"), oppRow[0]!.text);
-const lockedMoney = flat(kb).find((b) => b.text.includes("MONEY"))!;
-check("locked button still explains itself on tap",
-  lockedMoney.callback_data === `${MENU_PREFIX}:sec:money`);
+check("money is labelled as always included", moneyRow[0]!.text.includes("always in"), moneyRow[0]!.text);
+check("opportunity is labelled as always included", oppRow[0]!.text.includes("always in"), oppRow[0]!.text);
+
+console.log("\n[4b] tapping a section shows it; the toggle lives in the view");
+{
+  // The button used to only flip a flag, which gave nothing to decide with.
+  // Now it opens the section, and the brief toggle is one tap further in.
+  for (const b of flat(kb).filter((x) => x.callback_data?.includes(":see:"))) {
+    check(`${b.callback_data!.slice(MENU_PREFIX.length + 1)} opens its section`,
+      b.callback_data!.startsWith(`${MENU_PREFIX}:see:`));
+  }
+  check("no section button toggles directly",
+    !flat(kb).some((b) => b.callback_data?.includes(":sec:")) &&
+    !flat(kb).some((b) => b.callback_data?.includes(":toggle:")));
+
+  const inBrief = buildSectionFooter("tech", true) as { inline_keyboard: { text: string; callback_data: string }[][] };
+  const outBrief = buildSectionFooter("tech", false) as { inline_keyboard: { text: string; callback_data: string }[][] };
+  const inFlat = inBrief.inline_keyboard.flat();
+  const outFlat = outBrief.inline_keyboard.flat();
+  check("offers to remove it when it is in the brief",
+    inFlat.some((b) => b.text.includes("Remove") && b.callback_data === `${MENU_PREFIX}:toggle:tech`),
+    JSON.stringify(inFlat[0]));
+  check("offers to add it when it is not",
+    outFlat.some((b) => b.text.includes("Add") && b.callback_data === `${MENU_PREFIX}:toggle:tech`));
+  check("both states still navigate back",
+    inFlat.some((b) => b.callback_data === `${MENU_PREFIX}:back`) &&
+    outFlat.some((b) => b.callback_data === `${MENU_PREFIX}:back`));
+
+  const lockedFooter = buildSectionFooter("money", true) as { inline_keyboard: { callback_data: string }[][] };
+  check("a locked section gets no remove button",
+    !lockedFooter.inline_keyboard.flat().some((b) => b.callback_data?.includes(":toggle:")));
+
+  // A keyboard rendered before this change is still sitting in old chats.
+  const legacy = buildKeyboard(DEFAULT_PREFS) as { inline_keyboard: { callback_data?: string }[][] };
+  check("the bare keyboard has no url", !flat(legacy).some((b) => b.url));
+}
 
 console.log("\n[5] toggling a section");
 {
   const db = fresh();
   await savePrefs(db, DEFAULT_PREFS);
-  const off = await tap(db, "sec:tech");
+  // Both names must work: keyboards rendered before the rename still send "sec".
+  const legacy = await tap(db, "sec:tech");
+  check("the old 'sec' payload still works", legacy.changed === true && legacy.note.includes("off"), legacy.note);
+  const back = await tap(db, "sec:tech");
+  check("and toggles back", back.prefs.sections.includes("tech"));
+
+  const off = await tap(db, "toggle:tech");
   check("reports it went off", off.note.includes("off"), off.note);
   check("marks the change", off.changed === true);
   check("tech removed", !off.prefs.sections.includes("tech"));

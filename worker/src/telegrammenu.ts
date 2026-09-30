@@ -83,6 +83,15 @@ const urgencyIcon: Record<Urgency, string> = { "act today": "\u{1F525}", "this w
  * their real callback so the tap answers with an explanation instead of
  * silently doing nothing.
  */
+/**
+ * Section buttons on the main menu.
+ *
+ * These open the section rather than toggling it. Reading and switching are
+ * different intentions, and a button that only flips a flag gives you nothing to
+ * decide with. The tick still says whether the section reaches the daily brief,
+ * and the toggle itself lives in the section view, where you have just read the
+ * stories.
+ */
 function sectionButtons(prefs: Prefs): unknown[] {
   const rows: unknown[] = [];
   for (const s of ALL_SECTIONS) {
@@ -91,8 +100,8 @@ function sectionButtons(prefs: Prefs): unknown[] {
     const m = SECTION_META[s];
     rows.push([
       {
-        text: locked ? `${m.emoji} ${m.title} (always on)` : `${mark(on)} ${m.emoji} ${m.title}`,
-        callback_data: `${MENU_PREFIX}:sec:${s}`,
+        text: locked ? `${m.emoji} ${m.title} (always in)` : `${mark(on)} ${m.emoji} ${m.title}`,
+        callback_data: `${MENU_PREFIX}:see:${s}`,
       },
     ]);
   }
@@ -164,6 +173,10 @@ export async function handleToggle(
   let changed = false;
 
   switch (action) {
+    // "toggle" is the current name. "sec" is still accepted because keyboards
+    // rendered before the change are sitting in people's chats, and a stale
+    // button that does nothing looks like a broken bot.
+    case "toggle":
     case "sec": {
       const section = arg as Section;
       if (!(section in SECTION_META)) return { prefs, note: "", changed: false };
@@ -314,17 +327,31 @@ export function buildSectionPicker(prefs: Prefs): unknown {
   };
 }
 
-/** Keyboard under a section, so the next thing you want is one tap away. */
-export function buildSectionFooter(): unknown {
-  return {
-    inline_keyboard: [
-      [
-        { text: "\u{1F4CB} Another section", callback_data: `${MENU_PREFIX}:browse` },
-        { text: "\u{1F4E4} Send the full brief", callback_data: `${MENU_PREFIX}:send` },
-      ],
-      [{ text: "\u{1F519} Back to menu", callback_data: `${MENU_PREFIX}:back` }],
-    ],
-  };
+/**
+ * Keyboard under a section.
+ *
+ * The toggle sits here rather than on the main menu because this is where the
+ * decision makes sense: you have read the stories, so you know.
+ */
+export function buildSectionFooter(section: Section, inBrief: boolean): unknown {
+  const locked = section === "money" || section === "opportunity";
+  const rows: unknown[][] = [];
+  if (!locked) {
+    rows.push([
+      {
+        text: inBrief
+          ? "\u{2796} Remove from my 07:30 brief"
+          : "\u{2795} Add to my 07:30 brief",
+        callback_data: `${MENU_PREFIX}:toggle:${section}`,
+      },
+    ]);
+  }
+  rows.push([
+    { text: "\u{1F4CB} Another section", callback_data: `${MENU_PREFIX}:browse` },
+    { text: "\u{1F4E4} Full brief", callback_data: `${MENU_PREFIX}:send` },
+  ]);
+  rows.push([{ text: "\u{1F519} Back to menu", callback_data: `${MENU_PREFIX}:back` }]);
+  return { inline_keyboard: rows };
 }
 
 /**
@@ -334,11 +361,20 @@ export function buildSectionFooter(): unknown {
  * the sources. Asking to see a section you switched off must show it rather than
  * quietly return nothing, which would be indistinguishable from an empty section.
  */
-export function renderSectionView(report: IntelReport, sectionKey: Section): string {
+export function renderSectionView(
+  report: IntelReport,
+  sectionKey: Section,
+  briefCount?: number,
+  inBrief?: boolean,
+): string {
   const block = report.sections.find((s) => s.section === sectionKey);
   const meta = SECTION_META[sectionKey];
   if (!block) return `${meta.emoji} ${meta.title}\n\nNot available.`;
   const head = [`${meta.emoji} ${meta.title}`];
+  // Say where this sits, so the reader knows what the toggle below will do.
+  if (typeof briefCount === "number" && typeof inBrief === "boolean") {
+    head.push(inBrief ? `In your 07:30 brief (${briefCount} sections on)` : "Not in your 07:30 brief");
+  }
   if (block.empty) return [...head, "", "Nothing in this section right now.", ""].join("\n");
   return [...head, "", ...block.lines].join("\n").slice(0, TELEGRAM_MAX_LEN);
 }

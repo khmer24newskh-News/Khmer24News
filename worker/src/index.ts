@@ -725,7 +725,7 @@ ${messages
               return json({ handled: "browse", result: r });
             }
 
-            // Open one section's content.
+            // Open one section's content. This is what the main-menu buttons do.
             if (cb.data.startsWith(SECTION_PREFIX)) {
               const key = cb.data.slice(SECTION_PREFIX.length) as Section;
               await answer("Loading...");
@@ -736,15 +736,43 @@ ${messages
                 const fx = await fetchFxRates();
                 // No applyPrefs: a section you switched off should still open.
                 const report = buildIntelReport(rows, fx, []);
-                const r = await sendWithMenu(env, to, renderSectionView(report, key), buildSectionFooter());
-                return json({ handled: "section", section: key, result: r });
+                const inBrief = prefs.sections.includes(key);
+                const r = await sendWithMenu(
+                  env, to,
+                  renderSectionView(report, key, prefs.sections.length, inBrief),
+                  buildSectionFooter(key, inBrief),
+                );
+                return json({ handled: "section", section: key, in_brief: inBrief, result: r });
               } catch (err) {
+                const prefs = await loadPrefs(env.DB);
                 const r = await sendWithMenu(
                   env, to,
                   `Could not load that section: ${(err as Error).message}`,
-                  buildSectionFooter(),
+                  buildSectionFooter(key, prefs.sections.includes(key)),
                 );
                 return json({ handled: "section", section: key, error: (err as Error).message, result: r });
+              }
+            }
+
+            // Add or remove the section from the daily brief, then show it
+            // again with the button state updated.
+            if (cb.data.startsWith(`${MENU_PREFIX}:toggle:`)) {
+              const key = cb.data.slice(`${MENU_PREFIX}:toggle:`.length) as Section;
+              const { prefs, note } = await handleToggle(env.DB, `kb24:toggle:${key}`);
+              await answer(note || undefined);
+              try {
+                const stored = await getArticles(env.DB, { limit: 200, hours: prefs.hours });
+                const rows = filterRows(stored, prefs);
+                const fx = await fetchFxRates();
+                const report = buildIntelReport(rows, fx, []);
+                const inBrief = prefs.sections.includes(key);
+                const text = [note, "", renderSectionView(report, key, prefs.sections.length, inBrief)]
+                  .filter((l) => l !== undefined)
+                  .join("\n");
+                const r = await sendWithMenu(env, to, text, buildSectionFooter(key, inBrief));
+                return json({ handled: "toggled", section: key, in_brief: inBrief, note, result: r });
+              } catch (err) {
+                return json({ handled: "toggled", section: key, note, error: (err as Error).message });
               }
             }
 
