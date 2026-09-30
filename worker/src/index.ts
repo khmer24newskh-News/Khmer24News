@@ -37,6 +37,7 @@ import { probeAlternatives, probeGoogle, tuneFeeds, tuneQueries, winner } from "
 import {
   DEFAULT_PREFS, applyPrefs, filterRows, loadPrefs, savePrefs, type Prefs,
 } from "./prefs.ts";
+import { buildStatus } from "./status.ts";
 import {
   CLOSE, MENU_PREFIX, NO_KEYBOARD, SEND_NOW, buildAndSendBrief, buildKeyboardWithUrl,
   editMessageText, handleToggle, menuCaption, sendWithMenu, setWebhook, webhookInfo,
@@ -648,6 +649,10 @@ ${messages
           if (message?.text) {
             const cmd = message.text.trim().split(/\s+/)[0]!.toLowerCase();
             const to = String(message.chat?.id ?? defaultChat);
+            if (cmd === "/status" || cmd === "/health" || cmd === "/st") {
+              const r = await sendWithMenu(env, to, await buildStatus(env), { inline_keyboard: [] });
+              return json({ handled: "status", result: r });
+            }
             if (cmd === "/menu" || cmd === "/start" || cmd === "/settings") {
               const prefs = await loadPrefs(env.DB);
               const r = await sendWithMenu(env, to, menuCaption(prefs), buildKeyboardWithUrl(prefs, settingsUrl));
@@ -656,6 +661,22 @@ ${messages
             if (cmd === "/brief" || cmd === "/send") {
               const r = await buildAndSendBrief(env);
               return json({ handled: "send", result: r });
+            }
+            // Help rather than silence. A command that quietly does nothing is
+            // indistinguishable from a broken bot.
+            if (cmd.startsWith("/")) {
+              const prefs = await loadPrefs(env.DB);
+              const help = [
+                "\u{1F527} What I understand:",
+                "",
+                "/menu    - open the settings keyboard",
+                "/status  - is it working, and when did things last run",
+                "/brief   - send the business brief now",
+                "",
+                "Type /menu to choose which sections reach you.",
+              ].join("\n");
+              const r = await sendWithMenu(env, to, help, buildKeyboardWithUrl(prefs, settingsUrl));
+              return json({ handled: "help", command: cmd, result: r });
             }
           }
 
@@ -688,6 +709,14 @@ ${messages
               await answer();
               await show("Menu closed. Type /menu to open it again.", NO_KEYBOARD);
               return json({ handled: "close" });
+            }
+
+            // Status: a fresh message rather than an edit, because a status
+            // report you want to keep should not overwrite the menu you tap.
+            if (cb.data === `${MENU_PREFIX}:status`) {
+              await answer("Checking...");
+              const r = await sendWithMenu(env, to, await buildStatus(env), { inline_keyboard: [] });
+              return json({ handled: "status", result: r });
             }
 
             // Send now: strip the buttons, report progress, then confirm.

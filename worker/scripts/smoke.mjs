@@ -117,11 +117,17 @@ section("[5] the public pages render");
   for (const [path, needle] of [
     ["/", "Khmer24"],
     ["/settings", "What to watch"],
-    ["/intel", "BREAKING"],
   ]) {
     const { status, text } = await get(path);
     check(`${path} responds 200`, status === 200, String(status));
     check(`${path} contains '${needle}'`, text.includes(needle));
+  }
+  // /intel renders the daily brief, not the alert cards. BREAKING cards only ever
+  // appear in a streamed alert, so asserting it here was simply the wrong test.
+  const intel = await get("/intel");
+  check("/intel responds 200", intel.status === 200, String(intel.status));
+  for (const heading of ["CAMBODIA", "ASEAN", "GLOBAL", "MONEY", "OPPORTUNIT"]) {
+    check(`/intel shows the '${heading}' section`, intel.text.toUpperCase().includes(heading));
   }
 }
 

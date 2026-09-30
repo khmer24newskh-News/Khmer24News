@@ -111,6 +111,7 @@ export function buildKeyboard(prefs: Prefs): unknown {
       ],
       [
         { text: "\u{1F4E4} Send my brief now", callback_data: `${MENU_PREFIX}:send` },
+        { text: "\u{1F4CA} Status", callback_data: `${MENU_PREFIX}:status` },
       ],
       [
         { text: "\u{1F310} Full settings in the dashboard", url: "" },
