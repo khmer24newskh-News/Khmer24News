@@ -373,8 +373,26 @@ What must stay out, and why:
 `.dev.vars.example` are committed deliberately, with placeholders only - the
 audit checks them too, so a real value pasted into either is caught.
 
-Also worth doing once, via the GitHub API or the web UI: add a repository
-description and a licence. Neither is set.
+The repository description, homepage and topics are already set. A licence is
+deliberately left unset, which means nobody may legally reuse this code - add
+one only when you want that to change.
+
+### One dashboard-only field: the Cloudflare build root directory
+
+If you use Cloudflare's GitHub integration to deploy, **Settings → Builds → Root
+directory must be `worker`**, not `/`. The repo root has no `wrangler.toml`, so
+a build from `/` fails with an error that reads as though the Worker itself is
+broken.
+
+This cannot be scripted. The Builds API exposes builds, tokens and triggers, but
+the build settings - root directory, build and deploy command - are not in it,
+and `wrangler.toml` does not cover them either. It is one field, set once, in
+the dashboard. Deploying with `npx wrangler deploy` from `worker/` needs no such
+setting, so this only matters if you switch to GitHub-triggered deploys.
+
+To see whether the GitHub side is actually building, `node scripts/builds.mjs`
+lists the run history. It needs an API token with **Account Settings (read)** on
+top of Workers Scripts (edit); the `wrangler login` token gets 403 on it.
 
 ---
 
