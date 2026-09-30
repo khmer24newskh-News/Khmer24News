@@ -38,9 +38,12 @@ import {
   DEFAULT_PREFS, applyPrefs, filterRows, loadPrefs, savePrefs, type Prefs,
 } from "./prefs.ts";
 import { buildStatus } from "./status.ts";
+import { ALL_SOURCES } from "./registry.ts";
 import {
-  buildSectionFooter, buildSectionPicker, CLOSE, MENU_PREFIX, SECTION_PREFIX, NO_KEYBOARD, SEND_NOW, buildAndSendBrief, buildKeyboardWithUrl,
-  editMessageText, handleToggle, menuCaption, renderSectionView, sendWithMenu, setWebhook, webhookInfo,
+  buildCategoryPage, buildRootMenu, buildSectionPage, buildSectionFooter, buildSectionPicker,
+  buildSourcePage, CATEGORY_KEYS, CLOSE, ROOT_MENU_TEXT, MENU_PREFIX, SECTION_PREFIX,
+  NO_KEYBOARD, SEND_NOW, buildAndSendBrief, buildKeyboardWithUrl, menuCaption,
+  editMessageText, handleToggle, renderSectionView, sendWithMenu, setWebhook, webhookInfo,
 } from "./telegrammenu.ts";
 import type { Env } from "./env.ts";
 
@@ -655,7 +658,7 @@ ${messages
             }
             if (cmd === "/menu" || cmd === "/start" || cmd === "/settings") {
               const prefs = await loadPrefs(env.DB);
-              const r = await sendWithMenu(env, to, menuCaption(prefs), buildKeyboardWithUrl(prefs, settingsUrl));
+              const r = await sendWithMenu(env, to, ROOT_MENU_TEXT, buildRootMenu(prefs));
               return json({ handled: "menu", result: r });
             }
             if (cmd === "/brief" || cmd === "/send") {
@@ -725,6 +728,76 @@ ${messages
               return json({ handled: "browse", result: r });
             }
 
+            // Pages: the full settings hub, all of it from the chat.
+            if (cb.data.startsWith(`${MENU_PREFIX}:page:`)) {
+              const which = cb.data.slice(`${MENU_PREFIX}:page:`.length);
+              await answer();
+              const prefs = await loadPrefs(env.DB);
+              if (which === "sec") {
+                const r = await sendWithMenu(
+                  env, to,
+                  "\u{1F4D6} Sections\n\nTap the name to read it. Tap \u{2714}\u{FE0F} / \u{2716}\u{FE0F} to " +
+                    "add or remove it from your 07:30 brief.",
+                  buildSectionPage(prefs),
+                );
+                return json({ handled: "page", page: "sections", result: r });
+              }
+              if (which === "src") {
+                const r = await sendWithMenu(
+                  env, to,
+                  `\u{1F4E1} Sources \u{2014} ${prefs.sources.length} of ${ALL_SOURCES.length} on\n\n` +
+                    "Tap to switch one off. Turning one off removes its stories from the brief.",
+                  buildSourcePage(prefs, 0),
+                );
+                return json({ handled: "page", page: "sources", result: r });
+              }
+              if (which === "cat") {
+                const r = await sendWithMenu(
+                  env, to,
+                  `\u{1F3F7} Categories \u{2014} ${prefs.categories.length} of ${CATEGORY_KEYS.length} on\n\n` +
+                    "Only these count as business opportunities worth acting on.",
+                  buildCategoryPage(prefs, 0),
+                );
+                return json({ handled: "page", page: "categories", result: r });
+              }
+              return json({ handled: "page", error: `unknown page ${which}` });
+            }
+
+            // Paging through the source list.
+            if (cb.data.startsWith(`${MENU_PREFIX}:navsrc:`)) {
+              await answer();
+              const page = Number(cb.data.slice(`${MENU_PREFIX}:navsrc:`.length));
+              const prefs = await loadPrefs(env.DB);
+              const r = await sendWithMenu(env, to, "\u{1F4E1} Sources", buildSourcePage(prefs, Number.isFinite(page) ? page : 0));
+              return json({ handled: "nav", page, result: r });
+            }
+
+            // Any preference change, then redraw the root menu so the counts and
+            // labels are always truthful. Editing rather than sending would
+            // overwrite the page the user is reading.
+            if (
+              cb.data.startsWith(`${MENU_PREFIX}:toggle:`) ||
+              cb.data.startsWith(`${MENU_PREFIX}:tsec:`) ||
+              cb.data.startsWith(`${MENU_PREFIX}:tsrc:`) ||
+              cb.data.startsWith(`${MENU_PREFIX}:tcat:`)
+            ) {
+              const { prefs, note } = await handleToggle(env.DB, cb.data);
+              await answer(note || undefined);
+              const text = note ? `${note}\n\n${ROOT_MENU_TEXT}` : ROOT_MENU_TEXT;
+              const r = await sendWithMenu(env, to, text, buildRootMenu(prefs));
+              return json({ handled: "setting", data: cb.data, note, result: r });
+            }
+
+            // Cycles: window and urgency.
+            if (cb.data.startsWith(`${MENU_PREFIX}:cycle:`)) {
+              const what = cb.data.slice(`${MENU_PREFIX}:cycle:`.length);
+              const payload = what === "urg" ? `kb24:urg` : `kb24:hours`;
+              const { prefs, note } = await handleToggle(env.DB, payload);
+              await answer(note || undefined);
+              const r = await sendWithMenu(env, to, `${note}\n\n${ROOT_MENU_TEXT}`, buildRootMenu(prefs));
+              return json({ handled: "cycle", what, note, result: r });
+            }
+
             // Open one section's content. This is what the main-menu buttons do.
             if (cb.data.startsWith(SECTION_PREFIX)) {
               const key = cb.data.slice(SECTION_PREFIX.length) as Section;
@@ -776,11 +849,11 @@ ${messages
               }
             }
 
-            // Back to the settings keyboard.
+            // Back to the root menu.
             if (cb.data === `${MENU_PREFIX}:back`) {
               await answer();
               const prefs = await loadPrefs(env.DB);
-              const r = await sendWithMenu(env, to, menuCaption(prefs), buildKeyboardWithUrl(prefs, settingsUrl));
+              const r = await sendWithMenu(env, to, ROOT_MENU_TEXT, buildRootMenu(prefs));
               return json({ handled: "back", result: r });
             }
 

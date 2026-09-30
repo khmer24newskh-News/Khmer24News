@@ -7,11 +7,11 @@
  * dashboard and in the 07:30 send.
  */
 import { applyPrefs, filterRows, loadPrefs, savePrefs, ALL_SECTIONS, URGENCIES, type Prefs, type Urgency } from "./prefs.ts";
-import { SECTION_META, type Section } from "./registry.ts";
+import { SECTION_META, ALL_SOURCES, type Section } from "./registry.ts";
 import { getArticles } from "./db.ts";
 import { fetchFxRates } from "./market.ts";
 import { buildIntelReport, renderIntelMessages, applyAnalysis, type IntelReport } from "./intel.ts";
-import { TELEGRAM_MAX_LEN } from "./config.ts";
+import { CATEGORIES, GENERAL_CATEGORY, TELEGRAM_MAX_LEN } from "./config.ts";
 import { runAnalyst } from "./analyst.ts";
 import type { Env } from "./env.ts";
 
@@ -178,6 +178,19 @@ export async function handleToggle(
     // button that does nothing looks like a broken bot.
     case "toggle":
     case "sec": {
+      // The same payload carries both section ids and the plain on/off
+      // settings, so the scalar names are dispatched before falling through to
+      // the section case. Otherwise "toggle:autosend" is treated as a section
+      // called "autosend", fails validation, and silently does nothing.
+      if (arg === "ai") { prefs.ai = !prefs.ai; changed = true; note = `AI analyst ${prefs.ai ? "on" : "off"}`; break; }
+      if (arg === "autosend") {
+        prefs.autoSend = !prefs.autoSend;
+        changed = true;
+        note = prefs.autoSend
+          ? "Auto-send ON - the brief goes out at 07:30"
+          : "Auto-send OFF - nothing is sent unless you ask";
+        break;
+      }
       const section = arg as Section;
       if (!(section in SECTION_META)) return { prefs, note: "", changed: false };
       if (section === "money" || section === "opportunity") {
@@ -208,14 +221,195 @@ export async function handleToggle(
       note = `AI analyst ${prefs.ai ? "on" : "off"}`;
       break;
     }
+    case "autosend": {
+      prefs.autoSend = !prefs.autoSend;
+      changed = true;
+      note = prefs.autoSend
+        ? "Auto-send ON - the brief goes out at 07:30"
+        : "Auto-send OFF - nothing is sent unless you ask";
+      break;
+    }
+    case "hours": {
+      // A short ladder rather than a free-text field: a Telegram keyboard cannot
+      // take typed input, and the values that matter are few.
+      const i = HOUR_STEPS.indexOf(prefs.hours);
+      prefs.hours = HOUR_STEPS[(i + 1) % HOUR_STEPS.length]!;
+      changed = true;
+      note = `Window: last ${prefs.hours} hours`;
+      break;
+    }
+    case "tsrc": {
+      // Index-based, not id-based: some source ids are longer than Telegram's
+      // 64-byte callback limit once the prefix is added.
+      const source = ALL_SOURCES[Number(arg)];
+      if (!source) return { prefs, note: "", changed: false };
+      prefs.sources = prefs.sources.includes(source.id)
+        ? prefs.sources.filter((id) => id !== source.id)
+        : [...prefs.sources, source.id];
+      // An empty source list would silence the brief entirely.
+      if (prefs.sources.length === 0) {
+        prefs.sources = ALL_SOURCES.map((s) => s.id);
+        return { prefs, note: "At least one source must stay on.", changed: true };
+      }
+      changed = true;
+      note = `${source.label} ${prefs.sources.includes(source.id) ? "on" : "off"}`;
+      break;
+    }
+    case "tcat": {
+      const cat = CATEGORY_KEYS[Number(arg)];
+      if (!cat) return { prefs, note: "", changed: false };
+      prefs.categories = prefs.categories.includes(cat)
+        ? prefs.categories.filter((c) => c !== cat)
+        : [...prefs.categories, cat];
+      if (prefs.categories.length === 0) {
+        prefs.categories = [...CATEGORY_KEYS];
+        return { prefs, note: "At least one category must stay on.", changed: true };
+      }
+      changed = true;
+      note = `${cat} ${prefs.categories.includes(cat) ? "on" : "off"}`;
+      break;
+    }
+    case "tsec": {
+      const section = ALL_SECTIONS[Number(arg)];
+      if (!section) return { prefs, note: "", changed: false };
+      if (section === "money" || section === "opportunity") {
+        return { prefs, note: `${SECTION_META[section].title} is part of every brief.`, changed: false };
+      }
+      const on = prefs.sections.includes(section);
+      const kept = on ? prefs.sections.filter((s) => s !== section) : [...prefs.sections, section];
+      prefs.sections = kept.length ? kept : ["money", "opportunity"];
+      changed = true;
+      note = `${SECTION_META[section].emoji} ${SECTION_META[section].title} ${on ? "off" : "on"}`;
+      break;
+    }
     default:
-      // `send` and `close` are handled by the route because they need effects
-      // beyond preferences. An unknown or stale tap just re-renders.
+      // `send`, `close` and the page actions are handled by the route because
+      // they need effects beyond preferences.
       return { prefs, note: "", changed: false };
   }
 
   await savePrefs(db, prefs);
   return { prefs, note, changed };
+}
+
+/** The window options offered in the menu. */
+export const HOUR_STEPS: number[] = [24, 48, 72, 168];
+
+/** Categories in a stable order, so an index always means the same thing. */
+export const CATEGORY_KEYS: string[] = [...Object.keys(CATEGORIES), GENERAL_CATEGORY];
+
+/** Sources per page. 37 sources would be an unusable wall of buttons. */
+const SOURCES_PER_PAGE = 10;
+const CATEGORIES_PER_PAGE = 12;
+
+/** Root menu: everything reachable, nothing hidden behind the web UI. */
+export function buildRootMenu(prefs: Prefs): unknown {
+  const active = prefs.sections.length;
+  return {
+    inline_keyboard: [
+      [
+        { text: `\u{1F4D6} Sections (${active}/8)`, callback_data: `${MENU_PREFIX}:page:sec` },
+        { text: `\u{1F4E1} Sources (${prefs.sources.length}/${ALL_SOURCES.length})`, callback_data: `${MENU_PREFIX}:page:src` },
+      ],
+      [
+        { text: `\u{1F3F7} Categories (${prefs.categories.length}/${CATEGORY_KEYS.length})`, callback_data: `${MENU_PREFIX}:page:cat` },
+      ],
+      [
+        { text: `\u{23F0} Window: ${prefs.hours}h`, callback_data: `${MENU_PREFIX}:cycle:hours` },
+        { text: `\u{1F525} ${prefs.minUrgency}`, callback_data: `${MENU_PREFIX}:cycle:urg` },
+      ],
+      [
+        { text: `\u{2728} AI analyst: ${prefs.ai ? "on" : "off"}`, callback_data: `${MENU_PREFIX}:toggle:ai` },
+        {
+          text: `\u{23F0} 07:30 auto-send: ${prefs.autoSend ? "on" : "off"}`,
+          callback_data: `${MENU_PREFIX}:toggle:autosend`,
+        },
+      ],
+      [
+        { text: "\u{1F4E4} Send the brief now", callback_data: `${MENU_PREFIX}:send` },
+        { text: "\u{1F4CA} Status", callback_data: `${MENU_PREFIX}:status` },
+      ],
+    ],
+  };
+}
+
+export const ROOT_MENU_TEXT =
+  "\u{1F527} What do you want to change?\n\nEverything the website can do, from here.";
+
+/** Section list: tap to open, and see the tick for the brief. */
+export function buildSectionPage(prefs: Prefs): unknown {
+  return {
+    inline_keyboard: [
+      ...ALL_SECTIONS.map((s, i) => {
+        const m = SECTION_META[s];
+        const on = prefs.sections.includes(s);
+        const locked = s === "money" || s === "opportunity";
+        return [
+          {
+            text: locked
+              ? `${m.emoji} ${m.title} (always in)`
+              : `${mark(on)} ${m.emoji} ${m.title}`,
+            callback_data: `${MENU_PREFIX}:see:${s}`,
+          },
+          {
+            text: locked ? "\u{1F512}" : on ? "\u{2716}\u{FE0F}" : "\u{2714}\u{FE0F}",
+            callback_data: `${MENU_PREFIX}:tsec:${i}`,
+          },
+        ];
+      }),
+      [{ text: "\u{1F519} Menu", callback_data: `${MENU_PREFIX}:back` }],
+    ],
+  };
+}
+
+/** Source list, paginated, with a live count. */
+export function buildSourcePage(prefs: Prefs, page: number): unknown {
+  const total = ALL_SOURCES.length;
+  const pages = Math.max(1, Math.ceil(total / SOURCES_PER_PAGE));
+  const clamped = Math.max(0, Math.min(page, pages - 1));
+  const slice = ALL_SOURCES.slice(clamped * SOURCES_PER_PAGE, (clamped + 1) * SOURCES_PER_PAGE);
+  const rows: unknown[][] = slice.map((s, i) => {
+    const on = prefs.sources.includes(s.id);
+    return [
+      {
+        text: `${mark(on)} ${s.label.slice(0, 40)}`,
+        callback_data: `${MENU_PREFIX}:tsrc:${clamped * SOURCES_PER_PAGE + i}`,
+      },
+    ];
+  });
+  const nav: unknown[] = [];
+  if (clamped > 0) {
+    nav.push({ text: "\u{2190} Back", callback_data: `${MENU_PREFIX}:navsrc:${clamped - 1}` });
+  }
+  nav.push({
+    text: `Page ${clamped + 1}/${pages}  (${prefs.sources.length} on)`,
+    callback_data: `${MENU_PREFIX}:noop`,
+  });
+  if (clamped < pages - 1) {
+    nav.push({ text: "Next \u{2192}", callback_data: `${MENU_PREFIX}:navsrc:${clamped + 1}` });
+  }
+  rows.push([
+    ...nav,
+    { text: "\u{1F519} Menu", callback_data: `${MENU_PREFIX}:back` },
+  ]);
+  return { inline_keyboard: rows };
+}
+
+export function buildCategoryPage(prefs: Prefs, page = 0): unknown {
+  const total = CATEGORY_KEYS.length;
+  const pages = Math.max(1, Math.ceil(total / CATEGORIES_PER_PAGE));
+  const clamped = Math.max(0, Math.min(page, pages - 1));
+  const slice = CATEGORY_KEYS.slice(clamped * CATEGORIES_PER_PAGE, (clamped + 1) * CATEGORIES_PER_PAGE);
+  const rows: unknown[][] = slice.map((c, i) => [
+    {
+      text: `${mark(prefs.categories.includes(c))} ${c.slice(0, 34)}`,
+      callback_data: `${MENU_PREFIX}:tcat:${clamped * CATEGORIES_PER_PAGE + i}`,
+    },
+  ]);
+  rows.push([
+    { text: "\u{1F519} Menu", callback_data: `${MENU_PREFIX}:back` },
+  ]);
+  return { inline_keyboard: rows };
 }
 
 /** Callback payloads that the route must act on itself rather than as a toggle. */

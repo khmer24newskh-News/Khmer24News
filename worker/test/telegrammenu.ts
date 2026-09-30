@@ -2,9 +2,11 @@
 import {
   CLOSE, MENU_PREFIX, NO_KEYBOARD, SEND_NOW, buildKeyboard, buildKeyboardWithUrl,
   buildSectionFooter, handleToggle, menuCaption,
+  CATEGORY_KEYS, HOUR_STEPS,
+  buildCategoryPage, buildRootMenu, buildSectionPage, buildSourcePage,
 } from "../src/telegrammenu.ts";
 import { ALL_SECTIONS, DEFAULT_PREFS, loadPrefs, savePrefs, URGENCIES, type Prefs } from "../src/prefs.ts";
-import { SECTION_META } from "../src/registry.ts";
+import { ALL_SOURCES, SECTION_META } from "../src/registry.ts";
 
 let pass = 0;
 let fail = 0;
@@ -43,8 +45,11 @@ class PrefsD1 {
 
 const fresh = () => new PrefsD1() as PrefsD1 & D1Database;
 const tap = (db: D1Database, data: string) => handleToggle(db, `${MENU_PREFIX}:${data}`);
-const rows = (kb: unknown) => (kb as { inline_keyboard: { text: string; callback_data?: string; url?: string }[][] }).inline_keyboard;
-const flat = (kb: unknown) => rows(kb).flat();
+const rows = (kb: unknown) =>
+  (kb as { inline_keyboard: { text: string; callback_data?: string; url?: string }[][] }).inline_keyboard;
+/** Flattens rows into individual buttons. */
+const flat = (kb: unknown): { text: string; callback_data?: string; url?: string }[] =>
+  rows(kb).flat();
 const sectionRows = (kb: unknown) => rows(kb).filter((r) => r[0]!.callback_data?.includes(":see:"));
 
 console.log("[1] keyboard shape");
@@ -252,6 +257,151 @@ console.log("\n[12] the caption reflects the settings");
 console.log("\n[13] an empty keyboard removes the buttons");
 check("NO_KEYBOARD is an empty inline keyboard",
   Array.isArray(NO_KEYBOARD.inline_keyboard) && NO_KEYBOARD.inline_keyboard.length === 0);
+
+console.log("\n[13] every control in the site is reachable from the chat");
+{
+  const root = buildRootMenu(DEFAULT_PREFS) as { inline_keyboard: { text: string; callback_data: string }[][] };
+  const flatRoot = root.inline_keyboard.flat();
+  const all = [...flatRoot, ...flat(buildSectionPage(DEFAULT_PREFS)), ...flat(buildCategoryPage(DEFAULT_PREFS)),
+               ...flat(buildSourcePage(DEFAULT_PREFS, 0))];
+
+  for (const [name, needle] of [
+    ["sections", "Sections"], ["sources", "Sources"], ["categories", "Categories"],
+    ["window", "Window"], ["AI", "AI analyst"],
+    ["auto-send", "auto-send"], ["send now", "Send the brief"], ["status", "Status"],
+  ] as const) {
+    check(`the menu offers ${name}`, all.some((b) => b.text.includes(needle)), all.map((b) => b.text).join(" | "));
+  }
+  // The urgency button shows whichever level is current, so any of the three counts.
+  check("the menu offers urgency",
+    all.some((b) => URGENCIES.some((u) => b.text.includes(u))),
+    all.map((b) => b.text).join(" | "));
+
+  // Telegram rejects callback_data over 64 bytes, and several source ids are long
+  // enough to blow the limit once a prefix is added. Indexing avoids that class
+  // of bug entirely.
+  const tooLong = all.filter((b) => new TextEncoder().encode(b.callback_data).length > 64);
+  check("every callback fits Telegram's 64-byte limit", tooLong.length === 0,
+    tooLong.map((b) => `${b.callback_data} (${new TextEncoder().encode(b.callback_data).length})`).join(", "));
+  check("no callback exceeds 64 bytes even on the last source page",
+    flat(buildSourcePage(DEFAULT_PREFS, 3)).every(
+      (b) => new TextEncoder().encode(b.callback_data).length <= 64));
+
+  const buttons = all.length;
+  check("a keyboard stays well under Telegram's 100-button limit", buttons <= 100, String(buttons));
+}
+
+console.log("\n[14] toggling sources, categories, window and auto-send");
+{
+  const mk = () => fresh();
+  const tap = (db: D1Database, data: string) => handleToggle(db, `${MENU_PREFIX}:${data}`);
+
+  // Sources, by index.
+  const db1 = mk();
+  await savePrefs(db1, DEFAULT_PREFS);
+  const firstId = ALL_SOURCES[0]!.id;
+  const off = await tap(db1, "tsrc:0");
+  check("a source can be turned off", off.changed && !off.prefs.sources.includes(firstId), off.note);
+  check("and it names the source", off.note.includes(ALL_SOURCES[0]!.label.slice(0, 12)), off.note);
+  const on = await tap(db1, "tsrc:0");
+  check("and back on", on.prefs.sources.includes(firstId));
+
+  // The last source index must work, or pagination silently drops entries.
+  const lastIdx = ALL_SOURCES.length - 1;
+  const lastOff = await tap(db1, `tsrc:${lastIdx}`);
+  check("the last source is reachable by index",
+    !lastOff.prefs.sources.includes(ALL_SOURCES[lastIdx]!.id), lastOff.note);
+
+  // A bad index must not corrupt anything.
+  const bad = await tap(db1, "tsrc:9999");
+  check("an out-of-range index changes nothing", bad.changed === false && bad.note === "");
+
+  // Categories.
+  const db2 = mk();
+  await savePrefs(db2, DEFAULT_PREFS);
+  const cat = CATEGORY_KEYS[0]!;
+  const cOff = await tap(db2, "tcat:0");
+  check("a category can be turned off", cOff.changed && !cOff.prefs.categories.includes(cat));
+  check("and back on", (await tap(db2, "tcat:0")).prefs.categories.includes(cat));
+
+  // Sections by index.
+  const db3 = mk();
+  await savePrefs(db3, DEFAULT_PREFS);
+  const techIdx = ALL_SECTIONS.indexOf("tech");
+  const sOff = await tap(db3, `tsec:${techIdx}`);
+  check("a section can be turned off by index", sOff.changed && !sOff.prefs.sections.includes("tech"), sOff.note);
+  const moneyIdx = ALL_SECTIONS.indexOf("money");
+  const locked = await tap(db3, `tsec:${moneyIdx}`);
+  check("money stays locked by index too", locked.changed === false && locked.note.includes("part of every brief"), locked.note);
+
+  // Window cycles through the whole ladder and returns to where it started.
+  const db4 = mk();
+  await savePrefs(db4, DEFAULT_PREFS);
+  const startIdx = HOUR_STEPS.indexOf(DEFAULT_PREFS.hours);
+  const expected = HOUR_STEPS.map((_, i) => HOUR_STEPS[(startIdx + 1 + i) % HOUR_STEPS.length]);
+  const seen: number[] = [];
+  for (let i = 0; i < HOUR_STEPS.length; i++) seen.push((await tap(db4, "hours")).prefs.hours);
+  check("the window cycles through every option in order",
+    seen.join(",") === expected.join(","), `${seen.join(",")} expected ${expected.join(",")}`);
+  // A full lap returns to the start, so the last value is the start value.
+  check("a full lap returns to the start",
+    seen[seen.length - 1] === DEFAULT_PREFS.hours, `${seen[seen.length - 1]} vs ${DEFAULT_PREFS.hours}`);
+  check("every offered window is a sane one",
+    HOUR_STEPS.every((h) => h >= 1 && h <= 720), HOUR_STEPS.join(","));
+
+  // Auto-send. It shares the "toggle:" prefix with section ids, so this also
+  // guards against it being dispatched to the section case and silently ignored.
+  const db5 = mk();
+  await savePrefs(db5, DEFAULT_PREFS);
+  const as1 = await tap(db5, "toggle:autosend");
+  check("auto-send can be turned off", as1.prefs.autoSend === false);
+  check("and says what that means", as1.note.includes("nothing is sent"), as1.note);
+  check("and back on", (await tap(db5, "toggle:autosend")).prefs.autoSend === true);
+
+  // AI shares the same prefix and must not be read as a section either.
+  const db6 = mk();
+  await savePrefs(db6, DEFAULT_PREFS);
+  const ai1 = await tap(db6, "toggle:ai");
+  check("AI toggles through the same payload", ai1.prefs.ai === false && ai1.note.includes("off"), ai1.note);
+
+  // An unknown name after toggle: must not be mistaken for a section.
+  const db7 = mk();
+  await savePrefs(db7, DEFAULT_PREFS);
+  const unknown = await tap(db7, "toggle:nonsense");
+  check("an unknown toggle changes nothing",
+    unknown.changed === false && unknown.prefs.sections.length === 8, JSON.stringify(unknown));
+}
+
+console.log("\n[15] source pagination");
+{
+  const pages = Math.ceil(ALL_SOURCES.length / 10);
+  const first = buildSourcePage(DEFAULT_PREFS, 0) as { inline_keyboard: { text: string; callback_data: string }[][] };
+  const flatFirst = first.inline_keyboard.flat();
+  check("page 1 has sources", first.inline_keyboard.filter((r) => r[0]!.callback_data.includes("tsrc")).length > 0);
+  check("page 1 shows a next link", flatFirst.some((b) => b.text.includes("Next")));
+  check("page 1 has no back link", !flatFirst.some((b) => b.text === "\u{2190} Back"));
+
+  const mid = buildSourcePage(DEFAULT_PREFS, 1) as { inline_keyboard: { text: string }[][] };
+  const flatMid = mid.inline_keyboard.flat();
+  check("page 2 has both links",
+    flatMid.some((b) => b.text.includes("Back")) && flatMid.some((b) => b.text.includes("Next")));
+
+  const last = buildSourcePage(DEFAULT_PREFS, pages - 1) as { inline_keyboard: { text: string }[][] };
+  check("the last page has no next link",
+    !last.inline_keyboard.flat().some((b) => b.text.includes("Next")));
+  const allSourceIds = Array.from({ length: pages }, (_, p) => flat(buildSourcePage(DEFAULT_PREFS, p)))
+    .flat()
+    .filter((b) => b.callback_data?.includes("tsrc"))
+    .map((b) => b.callback_data!);
+  check("every source appears exactly once across the pages",
+    new Set(allSourceIds).size === ALL_SOURCES.length,
+    `${new Set(allSourceIds).size} of ${ALL_SOURCES.length} across ${pages} pages`);
+
+  // A page beyond the end must clamp, not render nothing.
+  const beyond = buildSourcePage(DEFAULT_PREFS, 99) as { inline_keyboard: unknown[][] };
+  check("a page past the end clamps instead of going blank",
+    beyond.inline_keyboard.flat().filter((b) => (b as { callback_data?: string }).callback_data?.includes("tsrc")).length > 0);
+}
 
 console.log(`\n${"=".repeat(56)}\n  passed: ${pass}   failed: ${fail}`);
 process.exitCode = fail === 0 ? 0 : 1;
