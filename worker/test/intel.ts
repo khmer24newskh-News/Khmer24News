@@ -73,13 +73,18 @@ console.log("\n[1b] Bing redirect unwrapping");
   check("never lengthens a url", unwrapBingUrl(wrapped).length < wrapped.length);
 }
 
-console.log("\n[2] RSS parsing");const rss = `<?xml version="1.0"?><rss version="2.0"><channel>
+console.log("\n[2] RSS parsing");
+// Dates are built relative to now. A literal "27 Sep 2026" passes on the day it
+// is written and fails three days later, when the article it describes is no
+// longer fresh - the test then reports a parsing bug that does not exist.
+const hoursAgo = (h: number): string => new Date(Date.now() - h * 3_600_000).toUTCString();
+const rss = `<?xml version="1.0"?><rss version="2.0"><channel>
   <item><title><![CDATA[Fed holds rates &amp; signals caution]]></title>
     <link>https://www.federalreserve.gov/newsevents/pressreleases/x1.htm</link>
-    <pubDate>Mon, 28 Sep 2026 10:00:00 GMT</pubDate>
+    <pubDate>${hoursAgo(2)}</pubDate>
     <description><![CDATA[<p>Some <b>body</b> text</p>]]></description></item>
   <item><title>Second story</title><link>https://example.com/2</link>
-    <pubDate>Sun, 27 Sep 2026 09:00:00 GMT</pubDate></item>
+    <pubDate>${hoursAgo(30)}</pubDate></item>
 </channel></rss>`;
 const items = parseFeed(rss, 10);
 check("parsed 2 items", items.length === 2, String(items.length));
@@ -91,7 +96,7 @@ check("limit respected", parseFeed(rss, 1).length === 1);
 
 const atom = `<feed xmlns="http://www.w3.org/2005/Atom">
   <entry><title>Atom title</title><link href="https://example.com/atom"/>
-  <updated>2026-09-28T10:00:00Z</updated></entry></feed>`;
+  <updated>${new Date(Date.now() - 3_600_000).toISOString()}</updated></entry></feed>`;
 check("atom parsed", parseFeed(atom, 5).length === 1);
 check("atom href used", parseFeed(atom, 5)[0]!.url === "https://example.com/atom");
 check("junk xml -> no items", parseFeed("<html>not a feed</html>").length === 0);
