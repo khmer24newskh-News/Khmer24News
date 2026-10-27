@@ -9,6 +9,7 @@ import type { IntelReport } from "./intel.ts";
 import type { Article } from "./db.ts";
 import { ALL_SOURCES, CLOUD_SOURCES, LISTING_SOURCES, SECTION_META, type Section } from "./registry.ts";
 import { CATEGORIES, GENERAL_CATEGORY } from "./config.ts";
+import { MANUS_PROFILES, type ManusProfile } from "./manus.ts";
 
 export const ALL_SECTIONS: Section[] = [
   "money", "cambodia", "asean", "global", "tech", "competitor", "customer", "opportunity",
@@ -40,6 +41,10 @@ export interface Prefs {
   alertStyle: AlertStylePref;
   /** Send nothing but HIGH-severity alerts. */
   breakingOnly: boolean;
+  /** Include a Manus agent analysis (the deep pass, not the Workers AI one). */
+  manus: boolean;
+  /** Which Manus agent profile to run. */
+  manusProfile: ManusProfile;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -52,6 +57,10 @@ export const DEFAULT_PREFS: Prefs = {
   autoSend: true,
   alertStyle: "breaking",
   breakingOnly: false,
+  // Off by default: it spends credits, and the free Workers AI pass already
+  // runs. Turning it on is a deliberate choice in Settings.
+  manus: false,
+  manusProfile: "standard",
 };
 
 const asStringArray = (raw: string | null, fallback: string[]): string[] => {
@@ -106,6 +115,11 @@ export async function loadPrefs(db: D1Database): Promise<Prefs> {
     ? (styleRaw as AlertStylePref)
     : DEFAULT_PREFS.alertStyle;
 
+  const profileRaw = (map.get("manus_profile") ?? "").trim();
+  const manusProfile = (MANUS_PROFILES as readonly string[]).includes(profileRaw)
+    ? (profileRaw as ManusProfile)
+    : DEFAULT_PREFS.manusProfile;
+
   return {
     // Never allow an empty brief: money and the opportunity synthesis always stay.
     sections: sections.length ? sections : ["money", "opportunity"],
@@ -117,6 +131,8 @@ export async function loadPrefs(db: D1Database): Promise<Prefs> {
     autoSend: asBool(map.get("auto_send") ?? null, DEFAULT_PREFS.autoSend),
     alertStyle,
     breakingOnly: asBool(map.get("breaking_only") ?? null, DEFAULT_PREFS.breakingOnly),
+    manus: asBool(map.get("manus") ?? null, DEFAULT_PREFS.manus),
+    manusProfile,
   };
 }
 
@@ -141,6 +157,8 @@ export async function savePrefs(db: D1Database, prefs: Prefs): Promise<void> {
     ["auto_send", prefs.autoSend ? "1" : "0"],
     ["alert_style", prefs.alertStyle],
     ["breaking_only", prefs.breakingOnly ? "1" : "0"],
+    ["manus", prefs.manus ? "1" : "0"],
+    ["manus_profile", prefs.manusProfile],
   ];
   for (const [k, v] of entries) await savePref(db, k, v);
 }

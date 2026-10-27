@@ -42,10 +42,14 @@ import { ALL_SOURCES } from "./registry.ts";
 import {
   buildCategoryPage, buildRootMenu, buildSectionPage, buildSectionFooter, buildSectionPicker,
   buildSourcePage, CATEGORY_KEYS, CLOSE, ROOT_MENU_TEXT, MENU_PREFIX, SECTION_PREFIX,
-  NO_KEYBOARD, SEND_NOW, buildAndSendBrief, buildKeyboardWithUrl, menuCaption,
+  NO_KEYBOARD, SEND_NOW, MANUS_START, buildAndSendBrief, buildKeyboardWithUrl, menuCaption,
   editMessageText, handleToggle, renderSectionView, sendWithMenu, setWebhook, webhookInfo,
 } from "./telegrammenu.ts";
 import type { Env } from "./env.ts";
+import {
+  MANUS_PROFILES, awaitTask, manusConfigured, pollTask, startTask,
+} from "./manus.ts";
+import { buildManusPrompt, fitForTelegram } from "./manusbrief.ts";
 
 /** Sources fetched as Bing News topics, for the coverage note in the brief. */
 const BING_SOURCES = CLOUD_SOURCES.filter((s) => s.discovery === "bing");
@@ -788,14 +792,73 @@ ${messages
               return json({ handled: "setting", data: cb.data, note, result: r });
             }
 
-            // Cycles: window and urgency.
+            // Cycles: window, urgency and the Manus profile.
             if (cb.data.startsWith(`${MENU_PREFIX}:cycle:`)) {
               const what = cb.data.slice(`${MENU_PREFIX}:cycle:`.length);
-              const payload = what === "urg" ? `kb24:urg` : `kb24:hours`;
+              const payload = what === "urg" ? `kb24:urg`
+                : what === "manusprofile" ? `kb24:manusprofile`
+                : `kb24:hours`;
               const { prefs, note } = await handleToggle(env.DB, payload);
               await answer(note || undefined);
               const r = await sendWithMenu(env, to, `${note}\n\n${ROOT_MENU_TEXT}`, buildRootMenu(prefs));
               return json({ handled: "cycle", what, note, result: r });
+            }
+
+            // Start a Manus run. Costs credits, so it is a deliberate tap and
+            // never part of the automatic brief.
+            if (cb.data === MANUS_START) {
+              if (!manusConfigured(env)) {
+                await answer("Manus is not configured");
+                const r = await sendWithMenu(
+                  env, to,
+                  "Manus is not configured on this Worker yet.\n\nAdd the key once:\n" +
+                    "npx wrangler secret put MANUS_API_KEY\n\n" +
+                    "Until then the rest of the brief works as normal.",
+                  NO_KEYBOARD,
+                );
+                return json({ handled: "manus", error: "not configured", result: r });
+              }
+              await answer("Starting...");
+              const prefs = await loadPrefs(env.DB);
+              const stored = await getArticles(env.DB, { limit: 200, hours: prefs.hours });
+              const rows = filterRows(stored, prefs);
+              if (rows.length === 0) {
+                const r = await sendWithMenu(
+                  env, to, "Nothing in the current window to analyse.", NO_KEYBOARD,
+                );
+                return json({ handled: "manus", error: "no signals", result: r });
+              }
+              const fx = await fetchFxRates();
+              const created = await startTask(env, buildManusPrompt(rows, fx, { hours: prefs.hours }), {
+                profile: prefs.manusProfile,
+                title: `Khmer24 brief - ${rows.length} signals`,
+                locale: "en",
+              });
+              if (!created.ok) {
+                const r = await sendWithMenu(
+                  env, to, `Manus could not start: ${created.error}`, NO_KEYBOARD,
+                );
+                return json({ handled: "manus", error: created.error, result: r });
+              }
+              const r = await sendWithMenu(
+                env, to,
+                [
+                  "\u{1F9E0} Manus is working on it.",
+                  "",
+                  `${rows.length} signals, profile: ${prefs.manusProfile}.`,
+                  "A run like this takes a few minutes and cannot be held open",
+                  "inside Telegram, so open it here:",
+                  "",
+                  created.taskUrl || `task ${created.taskId}`,
+                  "",
+                  "The free rule-based brief is unaffected.",
+                ].join("\n"),
+                NO_KEYBOARD,
+              );
+              return json({
+                handled: "manus", started: true, task_id: created.taskId,
+                task_url: created.taskUrl, result: r,
+              });
             }
 
             // Open one section's content. This is what the main-menu buttons do.
@@ -900,18 +963,103 @@ ${messages
           return json(await webhookInfo(env));
         }
 
+        case path === "/manus": {
+          // What the Worker knows about Manus: whether a key is installed and
+          // what the current settings are. Never returns the key.
+          if (!admin) return json({ error: "unauthorised - pass ?key=ADMIN_TOKEN" }, 401);
+          const prefs = await loadPrefs(env.DB);
+          return json({
+            configured: manusConfigured(env),
+            enabled: prefs.manus,
+            profile: prefs.manusProfile,
+            profiles: MANUS_PROFILES,
+            base_url: env.MANUS_API_URL || "https://api.manus.ai",
+            hint: manusConfigured(env)
+              ? "POST /manus/task to start a run"
+              : "set MANUS_API_KEY with: npx wrangler secret put MANUS_API_KEY",
+          });
+        }
+
+        case path === "/manus/task": {
+          if (!admin) return json({ error: "unauthorised" }, 401);
+          if (request.method !== "POST") return json({ error: "POST only" }, 405);
+          if (!manusConfigured(env)) {
+            return json({ error: "Manus is not configured on this Worker" }, 503);
+          }
+          const prefs = await loadPrefs(env.DB);
+          const all = await getArticles(env.DB, { limit: 200, hours: prefs.hours });
+          const rows = filterRows(all, prefs);
+          if (rows.length === 0) {
+            return json({ error: "no signals in the current window - nothing to analyse" }, 409);
+          }
+          const fx = await fetchFxRates();
+          const prompt = buildManusPrompt(rows, fx, { hours: prefs.hours });
+          const created = await startTask(env, prompt, {
+            profile: prefs.manusProfile,
+            title: `Khmer24 brief - ${rows.length} signals`,
+            locale: "en",
+          });
+          if (!created.ok) return json({ error: created.error }, 502);
+          // A URL is the useful thing to hand back: the run outlives this
+          // request by minutes, and the agent's own page shows progress.
+          return json({
+            task_id: created.taskId,
+            task_url: created.taskUrl,
+            title: created.title,
+            signals: rows.length,
+            profile: prefs.manusProfile,
+          });
+        }
+
+        case path === "/manus/task/status": {
+          if (!admin) return json({ error: "unauthorised" }, 401);
+          const taskId = (url.searchParams.get("task_id") ?? "").trim();
+          if (!taskId) return json({ error: "pass ?task_id=" }, 400);
+          // ?wait=1 polls for up to 20s and returns the answer if it arrives.
+          // Admin-only and free (reading does not spend credits), so it is the
+          // safe place to block - unlike the webhook, where a Telegram retry
+          // would start a second task and spend credits twice.
+          const wait = url.searchParams.get("wait");
+          if (wait && wait !== "0") {
+            const snap = await awaitTask(env, taskId, { maxWaitMs: 20_000, intervalMs: 2_500 });
+            return json({
+              ok: snap.ok,
+              settled: snap.settled,
+              status: snap.task?.status ?? null,
+              title: snap.task?.title ?? "",
+              task_url: snap.task?.task_url ?? "",
+              error: snap.error,
+              text: snap.text ? fitForTelegram(snap.text) : "",
+            }, snap.ok ? 200 : 502);
+          }
+          const snap = await pollTask(env, taskId);
+          return json({
+            ok: snap.ok,
+            status: snap.task?.status ?? null,
+            title: snap.task?.title ?? "",
+            task_url: snap.task?.task_url ?? "",
+            error: snap.error,
+            text: snap.text,
+          }, snap.ok ? 200 : 502);
+        }
+
         case path === "/settings": {
+          const manusReady = manusConfigured(env);
           if (request.method === "GET") {
             const prefs = await loadPrefs(env.DB);
             const counts = await sectionCounts(env.DB);
             return new Response(
-              renderSettings(prefs, { counts, basePath: "", saved: url.searchParams.get("saved") === "1" }),
+              renderSettings(prefs, {
+                counts, basePath: "", saved: url.searchParams.get("saved") === "1",
+                manusConfigured: manusReady,
+              }),
               { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
             );
           }
           if (!admin) return json({ error: "unauthorised - pass ?key=ADMIN_TOKEN" }, 401);
           const form = await request.formData();
           const list = (k: string) => form.getAll(k).map((v) => String(v));
+          const profileRaw = String(form.get("manus_profile") ?? "");
           const next: Prefs = {
             sections: list("sections") as Prefs["sections"],
             sources: list("sources"),
@@ -922,11 +1070,19 @@ ${messages
             autoSend: form.get("auto_send") !== null,
             alertStyle: String(form.get("alert_style") ?? "breaking") as Prefs["alertStyle"],
             breakingOnly: form.get("breaking_only") !== null,
+            manus: form.get("manus") !== null,
+            // Reject an unknown value rather than storing it: loadPrefs would
+            // silently fall back, and the page would show a choice that is not
+            // the one that was saved.
+            manusProfile: (MANUS_PROFILES as readonly string[]).includes(profileRaw)
+              ? (profileRaw as Prefs["manusProfile"])
+              : DEFAULT_PREFS.manusProfile,
           };
           if (next.sections.length === 0) {
             return new Response(
               renderSettings(await loadPrefs(env.DB), {
                 counts: await sectionCounts(env.DB), basePath: "",
+                manusConfigured: manusReady,
                 error: "Pick at least one section.",
               }),
               { status: 400, headers: { "content-type": "text/html; charset=utf-8" } },

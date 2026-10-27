@@ -48,6 +48,7 @@ jobs:
           npm run test:analyst
           npm run test:prefs
           npm run test:menu
+          npm run test:manus
         working-directory: worker
 
       - name: Parity with the legacy Python fetcher

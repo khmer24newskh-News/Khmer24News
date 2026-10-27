@@ -52,4 +52,10 @@ export interface Env {
    * for reference and for any future non-Google discovery path.
    */
   DISCOVERY_MODE?: string;
+  /** @secret Manus AI agent API key. */
+  MANUS_API_KEY?: string;
+  /** Manus API base URL. Defaults to https://api.manus.ai */
+  MANUS_API_URL?: string;
+  /** "1" starts the brief through Manus. Off unless set. */
+  MANUS_ENABLED?: string;
 }

@@ -35,12 +35,21 @@ Menu: <https://khmer24news.khmer24newskh.workers.dev/settings>
 ```powershell
 cd worker
 npm install
-npm run verify           # typecheck + secret audit + 439 tests
+npm run verify           # typecheck + secret audit + the main suite (102)
 npx wrangler deploy
 ```
 
+`npm run verify` is the gate, not the whole suite. The other six run separately,
+and all 611 are green:
+
+```powershell
+npm run test:alerts; npm run test:intel; npm run test:analyst
+npm run test:prefs;  npm run test:menu;  npm run test:manus
+npm run test:parity
+```
+
 See [`worker/DEPLOY.md`](worker/DEPLOY.md) for bindings, secrets, the 8-section
-report, the alert cards, the menu, Workers AI, and every route.
+report, the alert cards, the menu, Workers AI, the Manus agent, and every route.
 
 Four things worth knowing without reading the rest:
 

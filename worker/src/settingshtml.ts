@@ -3,6 +3,28 @@ import { esc } from "./html.ts";
 import { SECTION_META } from "./registry.ts";
 import { CATEGORIES, GENERAL_CATEGORY } from "./config.ts";
 import { sourcesByGroup, URGENCIES, ALERT_STYLES, ALL_SECTIONS, type AlertStylePref, type Prefs } from "./prefs.ts";
+import { MANUS_PROFILES, type ManusProfile } from "./manus.ts";
+
+/** Plain-language explanations for the Manus profile dropdown. */
+const MANUS_PROFILE_HELP: Record<ManusProfile, { label: string; note: string }> = {
+  standard: {
+    label: "Standard - the default",
+    note: "One agent, normal tool use. The right choice for a daily read.",
+  },
+  lite: {
+    label: "Lite - fastest, fewest credits",
+    note: "Shorter runs and shallower research. Fine for a quick second opinion.",
+  },
+  max: {
+    label: "Max - deepest reasoning",
+    note:
+      "Thinks longest and explores most, so it costs the most credits and can " +
+      "take many minutes. Reserve it for a question worth waiting for.",
+  },
+};
+
+/** Exported so the test can prove every dropdown option is explained. */
+export const MANUS_PROFILE_HELP_FOR_TESTS = MANUS_PROFILE_HELP;
 
 /** Plain-language explanations for the alert style dropdown. */
 const ALERT_STYLE_HELP: Record<AlertStylePref, { label: string; note: string }> = {
@@ -58,7 +80,14 @@ footer{color:#64748b;font-size:12px;text-align:center;padding:22px}
 
 export function renderSettings(
   prefs: Prefs,
-  opts: { saved?: boolean; error?: string; counts: Record<string, number>; basePath: string },
+  opts: {
+    saved?: boolean;
+    error?: string;
+    counts: Record<string, number>;
+    basePath: string;
+    /** Whether the Worker holds a Manus API key, so the page can say so. */
+    manusConfigured?: boolean;
+  },
 ): string {
   const on = <T,>(list: T[], v: T) => (list.includes(v) ? "checked" : "");
 
@@ -151,6 +180,27 @@ ${sourceBoxes}
       <div class="grid">
 ${catBoxes}
       </div>
+    </div>
+    <div class="card">
+      <h2>Manus agent (deep analysis)</h2>
+      <div class="warn">
+        Manus is an autonomous agent, not a chat model: a run can take several minutes and
+        spends credits. It is off unless you turn it on here. The free Workers AI analyst
+        above is separate and still runs.
+      </div>
+      <div class="grid">
+        <label class="opt"><input type="checkbox" name="manus" ${prefs.manus ? "checked" : ""}>
+          <span><b>Offer Manus deep analysis</b><span class="how">Adds a button in Telegram. The daily brief is not delayed waiting for it.</span></span></label>
+        <label class="opt"><span><b>Agent profile</b>
+          <span class="how">How hard the agent thinks - and how many credits it uses</span>
+          <select name="manus_profile">
+${MANUS_PROFILES.map((p) => `            <option value="${p}" ${prefs.manusProfile === p ? "selected" : ""}>${MANUS_PROFILE_HELP[p]!.label}</option>`).join("\n")}
+          </select>
+          <span class="how">${MANUS_PROFILE_HELP[prefs.manusProfile]!.note}</span></span></label>
+      </div>
+      <p class="meta">${opts.manusConfigured
+        ? "An API key is installed on the Worker."
+        : "No Manus API key on the Worker yet - the button will say so rather than fail silently. Set it with <code>npx wrangler secret put MANUS_API_KEY</code>."}</p>
     </div>
     <div class="bar">
       <button class="g" type="submit">Save settings</button>

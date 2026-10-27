@@ -9,3 +9,17 @@
 # This is for `wrangler dev` only. The deployed Worker takes its real values from
 # Cloudflare, encrypted, via `wrangler secret put` - they never touch the disk.
 ADMIN_TOKEN=put_any_random_string_here
+
+# --- Telegram (needed for anything that sends) ---
+# TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+# TELEGRAM_CHAT_ID=252519238
+# TELEGRAM_WEBHOOK_SECRET=put_any_random_string_here
+
+# --- Manus agent (optional) ---
+# Leave these out and Manus stays off; the free Workers AI analyst and the whole
+# brief still work. Get a key at https://open.manus.ai -> Authentication.
+# In production use:  npx wrangler secret put MANUS_API_KEY
+# MANUS_API_KEY=
+# MANUS_API_URL=https://api.manus.ai
+# Set to 0 to switch Manus off without deleting the key.
+# MANUS_ENABLED=1

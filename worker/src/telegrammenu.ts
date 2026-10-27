@@ -13,6 +13,7 @@ import { fetchFxRates } from "./market.ts";
 import { buildIntelReport, renderIntelMessages, applyAnalysis, type IntelReport } from "./intel.ts";
 import { CATEGORIES, GENERAL_CATEGORY, TELEGRAM_MAX_LEN } from "./config.ts";
 import { runAnalyst } from "./analyst.ts";
+import { MANUS_PROFILES } from "./manus.ts";
 import type { Env } from "./env.ts";
 
 export const MENU_PREFIX = "kb24";
@@ -183,6 +184,14 @@ export async function handleToggle(
       // the section case. Otherwise "toggle:autosend" is treated as a section
       // called "autosend", fails validation, and silently does nothing.
       if (arg === "ai") { prefs.ai = !prefs.ai; changed = true; note = `AI analyst ${prefs.ai ? "on" : "off"}`; break; }
+      if (arg === "manus") {
+        prefs.manus = !prefs.manus;
+        changed = true;
+        note = prefs.manus
+          ? "Manus deep analysis ON - the button appears in the menu"
+          : "Manus deep analysis OFF";
+        break;
+      }
       if (arg === "autosend") {
         prefs.autoSend = !prefs.autoSend;
         changed = true;
@@ -213,6 +222,13 @@ export async function handleToggle(
       prefs.minUrgency = URGENCIES[(URGENCIES.indexOf(prefs.minUrgency) + 1) % URGENCIES.length]!;
       changed = true;
       note = `Urgency: ${prefs.minUrgency}`;
+      break;
+    }
+    case "manusprofile": {
+      const i = MANUS_PROFILES.indexOf(prefs.manusProfile);
+      prefs.manusProfile = MANUS_PROFILES[(i + 1) % MANUS_PROFILES.length]!;
+      changed = true;
+      note = `Manus profile: ${prefs.manusProfile}`;
       break;
     }
     case "ai": {
@@ -326,15 +342,42 @@ export function buildRootMenu(prefs: Prefs): unknown {
         },
       ],
       [
+        {
+          text: `\u{1F9E0} Manus deep analysis: ${prefs.manus ? "on" : "off"}`,
+          callback_data: `${MENU_PREFIX}:toggle:manus`,
+        },
+        {
+          text: `\u{2699}\u{FE0F} ${prefs.manusProfile}`,
+          callback_data: `${MENU_PREFIX}:cycle:manusprofile`,
+        },
+      ],
+      [
         { text: "\u{1F4E4} Send the brief now", callback_data: `${MENU_PREFIX}:send` },
         { text: "\u{1F4CA} Status", callback_data: `${MENU_PREFIX}:status` },
       ],
+      ...(prefs.manus
+        ? [[{ text: "\u{1F9E0} Deep analysis with Manus", callback_data: MANUS_START }]]
+        : []),
     ],
   };
 }
 
+/** Starts a Manus run. Handled by the route because it costs credits. */
+export const MANUS_START = `${MENU_PREFIX}:manus`;
+
 export const ROOT_MENU_TEXT =
   "\u{1F527} What do you want to change?\n\nEverything the website can do, from here.";
+
+/**
+ * Read-only handles for the tests.
+ *
+ * The tests need the section list and the menu text without reaching into
+ * module-private state, and a test that re-implements them proves nothing.
+ */
+export const MENUS_FOR_TESTS = {
+  rootText: () => ROOT_MENU_TEXT,
+  sections: () => [...ALL_SECTIONS],
+};
 
 /** Section list: tap to open, and see the tick for the brief. */
 export function buildSectionPage(prefs: Prefs): unknown {

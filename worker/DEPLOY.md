@@ -69,6 +69,15 @@ is written to disk or to `wrangler.toml`.
   -join ((1..48) | ForEach-Object { '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'[(Get-Random -Maximum 62)] })
   ```
 
+Optional, for the Manus agent (see [Manus](#manus-optional-deep-analysis)):
+
+```powershell
+npx wrangler secret put MANUS_API_KEY
+```
+
+Skip it and everything else still works — Manus is off until you both install a
+key and switch it on in Settings.
+
 ## 4. Deploy
 
 ```powershell
@@ -501,6 +510,85 @@ numbers, companies or events. In practice it does:
 
 ---
 
+## Manus (optional deep analysis)
+
+A second, much heavier analyst. Workers AI answers in about a second and costs
+nothing; Manus is an **agent** that browses, runs code and writes files over
+several minutes, and spends credits. So it is not in the automatic path: it is a
+button you press.
+
+**The daily brief never waits for Manus.** An agent run outlives any HTTP
+request, so the brief would have to block on something that can take minutes.
+Instead Manus is offered on demand:
+
+- Settings page → **Manus agent (deep analysis)** card: a toggle and a profile.
+- Telegram `/menu` → **🧠 Manus deep analysis: on/off** and a **⚙️ profile**
+  cycle button. Turning it on adds **🧠 Deep analysis with Manus** to the menu.
+
+Tapping it starts the run and replies with the agent's own task URL. The free
+rule brief and the Workers AI pass are unaffected.
+
+| | |
+|---|---|
+| API | `https://api.manus.ai`, documented at <https://open.manus.ai/docs/v2> |
+| Auth | `x-manus-api-key` header (secret). Never send `Authorization` as well |
+| Start | `POST /v2/task.create` with `{ message: { content }, agent_profile }` |
+| Status | `GET /v2/task.detail?task_id=` |
+| Result | `GET /v2/task.listMessages?task_id=&order=asc` |
+| Profiles | `lite` (fastest), `standard` (default), `max` (deepest) |
+| Secret | `MANUS_API_KEY` |
+| Kill switch | `MANUS_ENABLED=0` — OFF without deleting the key |
+| Default | **off**, because it spends money |
+
+### Why `interactive_mode: false`
+
+An agent that stops to ask a clarifying question cannot be answered: nothing is
+watching the chat. Every task is created non-interactive, so it either finishes
+or reports an error.
+
+### Reading the answer
+
+Manus streams progress into the same message log, so "the last assistant
+message" is usually *"I'm opening the browser"* rather than a result. The reader
+prefers the message marked `delivery_kind: "result"`, then the last message that
+is not `progress`, and only then the final message. See `extractResultText` in
+`src/manus.ts`, covered by `npm run test:manus`.
+
+### Why `?wait=1` is admin-only
+
+`/manus/task/status?task_id=...&wait=1` polls for up to 20 seconds and returns the
+answer if it lands in time. This is deliberately **not** on the Telegram webhook:
+Telegram retries a webhook it thinks failed, and a retry would start a **second**
+task and spend credits twice. Reading a task costs nothing, so an operator asking
+for it is safe; a webhook retrying is not.
+
+### Setup
+
+```powershell
+npx wrangler secret put MANUS_API_KEY
+npx wrangler deploy
+```
+
+Then open `/settings?key=ADMIN_TOKEN`, tick **Offer Manus deep analysis**, pick a
+profile, save. Or do it entirely from Telegram: `/menu` → toggle → profile.
+
+Verify the key is seen without exposing it:
+
+```powershell
+curl "https://khmer24news.khmer24newskh.workers.dev/manus?key=ADMIN_TOKEN"
+# {"configured":true,"enabled":true,"profile":"standard",...}
+```
+
+Run one by hand:
+
+```powershell
+curl -X POST "https://khmer24news.khmer24newskh.workers.dev/manus/task?key=ADMIN_TOKEN"
+# {"task_id":"...","task_url":"https://manus.im/app/...","signals":41,"profile":"standard"}
+```
+
+
+---
+
 ## The 8-section Business Intelligence report
 
 `GET /intel` renders it; `?json=1` returns it as data; `?telegram=1&key=…` sends
@@ -561,6 +649,9 @@ omitting sections:
 | `/settings` | read public, **write admin** | The menu: sections, sources, categories |
 | `/intel` | public | The 8-section brief. `?json=1`, `?telegram=1&key=` |
 | `/telegram/hook` | shared secret | Telegram webhook for `/menu` |
+| `/manus` | **admin** | Whether Manus is configured, and the current settings. Never returns the key |
+| `/manus/task` | **admin** | POST: start a Manus run on the current window. Returns `task_id` + `task_url` |
+| `/manus/task/status` | **admin** | `?task_id=` reads one snapshot; add `&wait=1` to poll for up to 20s |
 | `/preview` | **admin** | Builds the report and shows it; sends nothing |
 | `/collect-cloud` | **admin** | Run the poll now: fetch, store, alert |
 | `/send` | **admin** | Send the report now |

@@ -19,7 +19,8 @@
     "test:analyst": "node --experimental-strip-types test/analyst.ts",
     "test:prefs": "node --experimental-strip-types test/prefs.ts",
     "test:menu": "node --experimental-strip-types test/telegrammenu.ts",
-    "send:report": "node --experimental-strip-types test/send-report-live.ts"
+    "send:report": "node --experimental-strip-types test/send-report-live.ts",
+    "test:manus": "node --experimental-strip-types test/manus.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
