@@ -72,6 +72,13 @@ export async function ensureSchema(db: D1Database): Promise<void> {
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published DESC)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_articles_score ON articles(score DESC)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)`).run();
+  // google_url is the second half of the dedup probe below. Without an index
+  // on it, "WHERE title_hash = ? OR google_url = ?" cannot use the OR
+  // optimisation and SQLite full-scans the table for every incoming article -
+  // which is what exhausted the account's daily D1 row-read budget.
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_articles_google_url ON articles(google_url)`).run();
+  // created_at backs the prune of rows whose published date is missing.
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_articles_created_at ON articles(created_at DESC)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS prefs(key TEXT PRIMARY KEY, value TEXT)`).run();
 }
@@ -159,8 +166,18 @@ export async function existsByHashOrGoogleUrl(
   titleHash: string,
   googleUrl: string,
 ): Promise<boolean> {
+  // A UNION of two single-column lookups rather than "WHERE a = ? OR b = ?".
+  // The OR form can only use an index when every branch is indexed, and with
+  // one branch unindexed SQLite full-scans the table for every probe - which
+  // is what exhausted the account's daily D1 row-read budget. Written this
+  // way each branch always uses its own index.
   const row = await db
-    .prepare(`SELECT 1 AS x FROM articles WHERE title_hash = ? OR google_url = ? LIMIT 1`)
+    .prepare(
+      `SELECT 1 AS x FROM articles WHERE title_hash = ? LIMIT 1
+       UNION
+       SELECT 1 AS x FROM articles WHERE google_url = ? LIMIT 1
+       LIMIT 1`,
+    )
     .bind(titleHash, googleUrl)
     .first<{ x: number }>();
   return row !== null;
@@ -200,8 +217,16 @@ export async function countAll(db: D1Database): Promise<number> {
 
 export async function purgeOlderThan(db: D1Database, days: number): Promise<number> {
   const cutoff = isoHoursAgo(days * 24);
-  const res = await db.prepare(`DELETE FROM articles WHERE published IS NOT NULL AND published < ?`)
-    .bind(cutoff)
+  // Rows with no published date were never purged before, so the table grew
+  // without bound and every full scan got more expensive. Fall back to
+  // created_at for those rows.
+  const res = await db
+    .prepare(
+      `DELETE FROM articles
+       WHERE (published IS NOT NULL AND published < ?)
+          OR (published IS NULL AND created_at IS NOT NULL AND created_at < ?)`,
+    )
+    .bind(cutoff, cutoff)
     .run();
   return res.meta?.changes ?? 0;
 }

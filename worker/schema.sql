@@ -25,3 +25,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_title_hash ON articles(title_hash
 CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_score ON articles(score DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category);
+-- Second half of the dedup probe. Without it the probe cannot use an index
+-- and scans the whole table once per incoming article.
+CREATE INDEX IF NOT EXISTS idx_articles_google_url ON articles(google_url);
+-- Backs the prune of rows whose published date is missing.
+CREATE INDEX IF NOT EXISTS idx_articles_created_at ON articles(created_at DESC);

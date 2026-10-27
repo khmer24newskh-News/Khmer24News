@@ -39,7 +39,7 @@ MAX_ITEMS_PER_SOURCE = "15"
 MAX_RESOLVES = "40"
 DUP_OVERLAP = "0.5"
 # 0 disables automatic pruning. Set e.g. "180" to delete articles older than 180 days.
-PURGE_AFTER_DAYS = "0"
+PURGE_AFTER_DAYS = "90"
 
 # --- streaming alerts ---
 # Send each article as its source publishes it.
