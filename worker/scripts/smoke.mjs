@@ -137,10 +137,45 @@ section("[6] the settings page has every control");
   for (const control of [
     'name="sections"', 'name="sources"', 'name="categories"',
     'name="min_urgency"', 'name="alert_style"', 'name="breaking_only"',
-    'name="auto_send"', 'name="ai"',
+    'name="auto_send"', 'name="ai"', 'name="manus"', 'name="manus_profile"',
   ]) {
     check(`offers ${control}`, text.includes(control));
   }
+  check("explains that Manus spends credits", /spends credits/i.test(text));
+  check("says whether a Manus key is installed",
+    text.includes("An API key is installed") || text.includes("MANUS_API_KEY"),
+    "neither the installed nor the how-to message is present");
+}
+
+section("[6b] the Manus routes are wired and locked");
+{
+  const anon = await get("/manus");
+  check("/manus needs a key", anon.status === 401, `got ${anon.status}`);
+
+  const cfg = await get(`/manus?${KEYED}`);
+  check("/manus answers with a key", cfg.status === 200, `got ${cfg.status}`);
+  check("/manus never returns the key itself", !cfg.text.includes("MANUS_API_KEY="));
+  check("/manus reports whether it is configured",
+    typeof cfg.json?.configured === "boolean", JSON.stringify(cfg.json));
+  check("/manus lists the three profiles",
+    Array.isArray(cfg.json?.profiles) && cfg.json.profiles.length === 3,
+    JSON.stringify(cfg.json?.profiles));
+  check("/manus offers a way forward when unconfigured",
+    cfg.json?.configured === true || String(cfg.json?.hint ?? "").includes("MANUS_API_KEY"),
+    JSON.stringify(cfg.json?.hint));
+
+  const wrongMethod = await get(`/manus/task?${KEYED}`);
+  check("/manus/task rejects GET", wrongMethod.status === 405, `got ${wrongMethod.status}`);
+
+  const noId = await get(`/manus/task/status?${KEYED}`);
+  check("/manus/task/status needs a task_id", noId.status === 400, `got ${noId.status}`);
+
+  // Without an API key the start route must refuse cleanly rather than attempt
+  // a fetch with an empty header.
+  const start = await get(`/manus/task?${KEYED}`, { method: "POST" });
+  check("starting without a key is 503, not a crash", start.status === 503, `got ${start.status}`);
+  check("and says why", String(start.json?.error ?? "").toLowerCase().includes("not configured"),
+    JSON.stringify(start.json));
 }
 
 section("[7] mutating routes are locked without the key");
